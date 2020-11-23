@@ -1,0 +1,11 @@
+[package]
+name = "ingest"
+version = "0.1.0"
+authors = ["okdistribute <633012+okdistribute@users.noreply.github.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+vadeen_osm = "0.4.1"
+osmpbf = "0.2.2"
