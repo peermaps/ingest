@@ -2,7 +2,6 @@
 mod denormalize;
 use osmpbf::{Element, ElementReader};
 use std::env;
-use std::result::Result;
 use vadeen_osm::osm_io::error::Error;
 
 fn main() -> std::result::Result<(), Error> {
@@ -10,13 +9,12 @@ fn main() -> std::result::Result<(), Error> {
     let pbf = &args[1];
     let output = &args[2];
 
-    read(pbf, output);
+    write_denormalized_data(pbf, output)?;
     return Ok(());
 }
 
-fn read(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
+fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
     let reader = ElementReader::from_path(pbf).unwrap();
-
     let writer = denormalize::Writer::new(output);
 
     let total = reader
@@ -37,10 +35,21 @@ fn read(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
                     );
                 }
                 Element::Relation(rel) => {
-                    return writer.add_relation(rel);
+                    /*
+                    return writer.add_relation(
+                        rel.id(), 
+                        rel.members().into_iter().collect(),
+                        rel.tags().into_iter().collect()
+                    );
+                    */
+                    return 0;
                 }
                 Element::Way(way) => {
-                    return writer.add_way(way);
+                    return writer.add_way(
+                        way.id(), 
+                        way.raw_refs(),
+                        way.tags().into_iter().collect()
+                    );
                 }
             },
             || 0_u64,     // Zero is the identity value for addition

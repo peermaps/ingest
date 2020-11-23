@@ -1,7 +1,6 @@
 use std::fs;
-use vadeen_osm::osm_io::write;
+use vadeen_osm::osm_io;
 use vadeen_osm::OsmBuilder;
-
 pub struct Writer {
     nodes: String,
     ways: String,
@@ -33,11 +32,41 @@ impl Writer {
         };
     }
 
-    pub fn add_relation(&self, relation: osmpbf::elements::Relation) -> u64 {
+    pub fn add_relation(&self, id: i64, members: &[i64], tags: Vec<(&str, &str)>) -> u64 {
         return 0;
     }
 
-    pub fn add_way(&self, relation: osmpbf::elements::Way) -> u64 {
+    pub fn add_way(&self, id: i64, refs: &[i64], tags: Vec<(&str, &str)>) -> u64 {
+        let mut builder = OsmBuilder::default();
+        for r in refs {
+            let ref_path = &format!("{}/{}.o5m", self.nodes, r);
+            match maybe_ref_data = osm_io::read(ref_path) {
+                Ok(ref_data) => {
+
+                } 
+                Err(err) => {
+                    println!("Failed to find ref {} for way {}", r, id);
+                }
+            }
+            let points = vec![
+
+
+            ]
+
+        }
+        builder.add_polyline(points, tags);
+        let osm = builder.build();
+        let writing = &format!("{}/{}.o5m", self.ways, id);
+        println!("Writing {}", writing);
+        match osm_io::write(writing, &osm) {
+            Ok(_) => {
+                return 1;
+            }
+            Err(_) => {
+                return 0;
+            }
+        }
+
         return 0;
     }
 
@@ -47,7 +76,7 @@ impl Writer {
         let osm = builder.build();
         let writing = &format!("{}/{}.o5m", self.nodes, id);
         println!("Writing {}", writing);
-        match write(writing, &osm) {
+        match osm_io::write(writing, &osm) {
             Ok(_) => {
                 return 1;
             }
