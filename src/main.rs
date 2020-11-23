@@ -23,28 +23,24 @@ fn read(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
         .par_map_reduce(
             |element| match element {
                 Element::Node(node) => {
-                    writer.add_node(
+                    return writer.add_node(
                         node.id(),
                         (node.lon(), node.lat()),
                         node.tags().into_iter().collect(),
                     );
-                    return 1;
                 }
                 Element::DenseNode(node) => {
-                    writer.add_node(
+                    return writer.add_node(
                         node.id,
                         (node.lon(), node.lat()),
                         node.tags().into_iter().collect(),
                     );
-                    return 1;
                 }
                 Element::Relation(rel) => {
-                    writer.add_relation(rel);
-                    return 1;
+                    return writer.add_relation(rel);
                 }
                 Element::Way(way) => {
-                    writer.add_way(way);
-                    return 1;
+                    return writer.add_way(way);
                 }
             },
             || 0_u64,     // Zero is the identity value for addition
