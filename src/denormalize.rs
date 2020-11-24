@@ -1,6 +1,7 @@
 use std::fs;
+use vadeen_osm::osm_io::error::Error;
 use vadeen_osm::osm_io;
-use vadeen_osm::OsmBuilder;
+use vadeen_osm::Osm;
 pub struct Writer {
     nodes: String,
     ways: String,
@@ -32,32 +33,55 @@ impl Writer {
         };
     }
 
-    pub fn add_relation(&self, id: i64, members: &[i64], tags: Vec<(&str, &str)>) -> u64 {
-        return 0;
+
+    fn read (&self, dirname: &str, id: i64) -> Result<Osm, Error> {
+        return osm_io::read(&format!("{}/{}.o5m", dirname, id));
     }
 
-    pub fn add_way(&self, id: i64, refs: Vec<i64>, tags: Vec<(&str, &str)>) -> u64 {
-        let mut builder = OsmBuilder::default();
-        let mut points: Vec<vadeen_osm::geo::Coordinate> = Vec::with_capacity(refs.len());
-
-        for r in refs {
-            println!("r {}", r);
-            let ref_path = &format!("{}/{}.o5m", self.nodes, r);
-            match osm_io::read(ref_path) {
-                Ok(osm) => {
-                    let node = &osm.nodes[0];
-                    points.push(node.coordinate);
-                } 
-                Err(err) => {
-                    println!("Failed to find ref {} for way {} at {}", r, id, ref_path);
-                    eprintln!("{}", err);
-                }
+    fn read_way (&self, id: i64) -> Result<vadeen_osm::Way, Error> {
+        match self.read(&self.ways, id) {
+            Ok(osm) => {
+                return Ok(osm.ways[0]);
+            } 
+            Err(err) => {
+                println!("Failed to find way {}", id);
+                eprintln!("{}", err);
+                panic!(err);
             }
-
         }
-        builder.add_polyline(points, tags);
-        let osm = builder.build();
-        let writing = &format!("{}/{}.o5m", self.ways, id);
+    }
+
+    fn read_relation (&self, id: i64) -> Result<vadeen_osm::Relation, Error> {
+        match self.read(&self.relations, id) {
+            Ok(osm) => {
+                return Ok(osm.relations[0]);
+            } 
+            Err(err) => {
+                println!("Failed to find relation {}", id);
+                eprintln!("{}", err);
+                panic!(err);
+            }
+        }
+    }
+
+    fn read_node (&self, id: i64) -> Result<&vadeen_osm::Node, Error> {
+        match self.read(&self.nodes, id) {
+            Ok(osm) => {
+                return Ok(&osm.nodes[0]);
+            } 
+            Err(err) => {
+                println!("Failed to find node {}", id);
+                eprintln!("{}", err);
+                panic!(err);
+            }
+        }
+    }
+
+    pub fn add_relation(&self, relation: vadeen_osm::Relation) -> u64 {
+        let mut osm = Osm::default();
+
+        osm.add_relation(relation);
+        let writing = &format!("{}/{}.o5m", self.ways, relation.id);
         println!("Writing {}", writing);
         match osm_io::write(writing, &osm) {
             Ok(_) => {
@@ -67,15 +91,28 @@ impl Writer {
                 return 0;
             }
         }
-
-        return 0;
     }
 
-    pub fn add_node(&self, id: i64, point: (f64, f64), tags: Vec<(&str, &str)>) -> u64 {
-        let mut builder = OsmBuilder::default();
-        builder.add_point(point, tags);
-        let osm = builder.build();
-        let writing = &format!("{}/{}.o5m", self.nodes, id);
+    pub fn add_way(&self, way: vadeen_osm::Way) -> u64 {
+        let mut osm= Osm::default();
+
+        osm.add_way(way);
+        let writing = &format!("{}/{}.o5m", self.ways, way.id);
+        println!("Writing {}", writing);
+        match osm_io::write(writing, &osm) {
+            Ok(_) => {
+                return 1;
+            }
+            Err(_) => {
+                return 0;
+            }
+        }
+    }
+
+    pub fn add_node(&self, node: vadeen_osm::Node) -> u64 {
+        let mut osm = Osm::default();
+        osm.add_node(node);
+        let writing = &format!("{}/{}.o5m", self.nodes, node.id);
         println!("Writing {}", writing);
         match osm_io::write(writing, &osm) {
             Ok(_) => {
@@ -87,3 +124,28 @@ impl Writer {
         }
     }
 }
+
+
+/*
+        for id in refs {
+            let node = self.read_node(id).unwrap();
+            points.push(node.coordinate);
+        }
+        */
+
+        /*
+        for m in members {
+            match m.member_type {
+                osmpbf::RelMemberType::Node => {
+                    let node = self.read_node(m.member_id).unwrap();
+                    points.push(node.coordinate)
+                }
+                osmpbf::RelMemberType::Way => {
+                    let way = self.read_way(m.member_id).unwrap();
+                }
+                osmpbf::RelMemberType::Relation => {
+                    let rel = self.read_relation(m.member_id).unwrap();
+                }
+            }
+        }
+        */
