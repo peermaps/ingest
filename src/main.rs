@@ -17,22 +17,26 @@ fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool,
     let reader = ElementReader::from_path(pbf).unwrap();
     let writer = denormalize::Writer::new(output);
 
-    let total = reader
-        .par_map_reduce(
+    let mut total = 0;
+
+    reader
+        .for_each(
             |element| match element {
                 Element::Node(node) => {
-                    return writer.add_node(
+                    let count = writer.add_node(
                         node.id(),
                         (node.lon(), node.lat()),
                         node.tags().into_iter().collect(),
                     );
+                    total += count;
                 }
                 Element::DenseNode(node) => {
-                    return writer.add_node(
+                    let count = writer.add_node(
                         node.id,
                         (node.lon(), node.lat()),
                         node.tags().into_iter().collect(),
                     );
+                    total += count;
                 }
                 Element::Relation(rel) => {
                     /*
@@ -42,18 +46,16 @@ fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool,
                         rel.tags().into_iter().collect()
                     );
                     */
-                    return 0;
                 }
                 Element::Way(way) => {
-                    return writer.add_way(
+                    let count = writer.add_way(
                         way.id(), 
                         way.refs().into_iter().collect(),
                         way.tags().into_iter().collect()
                     );
+                    total += count;
                 }
             },
-            || 0_u64,     // Zero is the identity value for addition
-            |a, b| a + b, // Sum the partial results
         )
         .unwrap();
 
