@@ -36,22 +36,23 @@ impl Writer {
         return 0;
     }
 
-    pub fn add_way(&self, id: i64, refs: &[i64], tags: Vec<(&str, &str)>) -> u64 {
+    pub fn add_way(&self, id: i64, refs: Vec<i64>, tags: Vec<(&str, &str)>) -> u64 {
         let mut builder = OsmBuilder::default();
-        for r in refs {
-            let ref_path = &format!("{}/{}.o5m", self.nodes, r);
-            match maybe_ref_data = osm_io::read(ref_path) {
-                Ok(ref_data) => {
+        let mut points: Vec<vadeen_osm::geo::Coordinate> = Vec::with_capacity(refs.len());
 
+        for r in refs {
+            println!("r {}", r);
+            let ref_path = &format!("{}/{}.o5m", self.nodes, r);
+            match osm_io::read(ref_path) {
+                Ok(osm) => {
+                    let node = &osm.nodes[0];
+                    points.push(node.coordinate);
                 } 
                 Err(err) => {
-                    println!("Failed to find ref {} for way {}", r, id);
+                    println!("Failed to find ref {} for way {} at {}", r, id, ref_path);
+                    eprintln!("{}", err);
                 }
             }
-            let points = vec![
-
-
-            ]
 
         }
         builder.add_polyline(points, tags);

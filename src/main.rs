@@ -47,7 +47,7 @@ fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool,
                 Element::Way(way) => {
                     return writer.add_way(
                         way.id(), 
-                        way.raw_refs(),
+                        way.refs().into_iter().collect(),
                         way.tags().into_iter().collect()
                     );
                 }
