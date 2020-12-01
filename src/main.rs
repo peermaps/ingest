@@ -62,8 +62,7 @@ fn get_dense_meta (_tags: osmpbf::DenseTagIter, info : osmpbf::DenseNodeInfo) ->
 
 fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
     let reader = ElementReader::from_path(pbf).unwrap();
-    let writer = denormalize::Writer::new(output);
-
+    let mut writer = denormalize::Writer::new(output);
     let mut total = 0;
 
     reader
