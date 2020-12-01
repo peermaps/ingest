@@ -1,13 +1,12 @@
 use hex;
 use std::fs;
+use std::path::{Path,PathBuf};
 use vadeen_osm::osm_io;
 use vadeen_osm::Osm;
 use lru::LruCache;
 
 pub struct Writer {
-    nodes: String,
-    ways: String,
-    relations: String,
+    output: String,
     cache: LruCache<String, bool>
 }
 
@@ -24,38 +23,51 @@ fn create_directory(path: &str) {
 
 impl Writer {
     pub fn new(output: &str) -> Writer {
-        let nodes = format!("{}/{}", output, "nodes");
-        let ways = format!("{}/{}", output, "ways");
-        let relations = format!("{}/{}", output, "relations");
+        let out = Path::new(output);
+        let nodes = out.join("nodes");
+        let ways = out.join("ways");
+        let relations = out.join("relations");
         create_directory(output);
         
         let cache = LruCache::new(1000);
-        create_directory(&nodes);
-        create_directory(&ways);
-        create_directory(&relations);
+        let nodes = nodes.to_str().unwrap();
+        let ways = ways.to_str().unwrap();
+        let relations= relations.to_str().unwrap();
+        create_directory(nodes);
+        create_directory(ways);
+        create_directory(relations);
         return Writer {
             cache,
-            nodes,
-            ways,
-            relations,
+            output: output.to_string()
         };
     }
 
     fn write(&mut self, dir: &str, id: i64, osm: &Osm) -> u64 {
-        let bytes = id.to_le_bytes();
-        let pre = hex::encode(&bytes[0..2]);
-        let writable_dir = &format!("{}/{}", dir, pre);
-        match self.cache.get(&pre) {
-            Some(_) => {
+        let bytes = id.to_be_bytes();
+        let mut i = 0;
 
-            } None => {
-                create_directory(writable_dir);
-                self.cache.put(pre, true);
+        let mut writable_dir = PathBuf::new();
+        writable_dir.push(&self.output);
+        writable_dir.push(&dir);
+        while i < bytes.len() {
+            let pre = hex::encode(&bytes[i..i+1]);
+            i += 1;
+            writable_dir.push(&pre);
+            match self.cache.get(&pre) {
+                Some(_) => {
+
+                } None => {
+                    let written = writable_dir.to_str().unwrap();
+                    create_directory(written);
+                    self.cache.put(written.to_string(), true);
+                    println!("{}", written);
+                }
             }
         }
 
-        let rest = hex::encode(&bytes[2..bytes.len()]);
-        match osm_io::write(&format!("{}/{}.o5m", writable_dir, rest), osm) {
+
+        let rest = hex::encode(&bytes[i- 1..bytes.len()]);
+        match osm_io::write(&format!("{}/{}.o5m", writable_dir.to_str().unwrap(), rest), osm) {
             Ok(_) => {
                 return 1;
             }
@@ -70,20 +82,20 @@ impl Writer {
         let mut osm = Osm::default();
         let id = relation.id;
         osm.add_relation(relation);
-        return self.write(&self.relations.clone(), id, &osm);
+        return self.write("relations", id, &osm);
     }
 
     pub fn add_way(&mut self, way: vadeen_osm::Way) -> u64 {
         let mut osm = Osm::default();
         let id = way.id;
         osm.add_way(way);
-        return self.write(&self.ways.clone(), id, &osm);
+        return self.write("ways", id, &osm);
     }
 
     pub fn add_node(&mut self, node: vadeen_osm::Node) -> u64 {
         let mut osm = Osm::default();
         let id = node.id;
         osm.add_node(node);
-        return self.write(&self.nodes.clone(), id, &osm);
+        return self.write("nodes", id, &osm);
     }
 }
