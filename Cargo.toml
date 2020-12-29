@@ -9,3 +9,5 @@ edition = "2018"
 [dependencies]
 vadeen_osm = "0.4.1"
 osmpbf = "0.2.2"
+hex = "0.4.2"
+lru = "0.6.1"
