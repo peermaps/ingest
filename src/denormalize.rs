@@ -1,13 +1,13 @@
 use hex;
+use lru::LruCache;
 use std::fs;
-use std::path::{Path,PathBuf};
+use std::path::{Path, PathBuf};
 use vadeen_osm::osm_io;
 use vadeen_osm::Osm;
-use lru::LruCache;
 
 pub struct Writer {
     output: String,
-    cache: LruCache<String, bool>
+    cache: LruCache<String, bool>,
 }
 
 fn create_directory(path: &str) {
@@ -28,17 +28,17 @@ impl Writer {
         let ways = out.join("ways");
         let relations = out.join("relations");
         create_directory(output);
-        
+
         let cache = LruCache::new(1000);
         let nodes = nodes.to_str().unwrap();
         let ways = ways.to_str().unwrap();
-        let relations= relations.to_str().unwrap();
+        let relations = relations.to_str().unwrap();
         create_directory(nodes);
         create_directory(ways);
         create_directory(relations);
         return Writer {
             cache,
-            output: output.to_string()
+            output: output.to_string(),
         };
     }
 
@@ -50,13 +50,12 @@ impl Writer {
         writable_dir.push(&self.output);
         writable_dir.push(&dir);
         while i < bytes.len() {
-            let pre = hex::encode(&bytes[i..i+1]);
+            let pre = hex::encode(&bytes[i..i + 1]);
             i += 1;
             writable_dir.push(&pre);
             match self.cache.get(&pre) {
-                Some(_) => {
-
-                } None => {
+                Some(_) => {}
+                None => {
                     let written = writable_dir.to_str().unwrap();
                     create_directory(written);
                     self.cache.put(written.to_string(), true);
@@ -65,9 +64,11 @@ impl Writer {
             }
         }
 
-
-        let rest = hex::encode(&bytes[i- 1..bytes.len()]);
-        match osm_io::write(&format!("{}/{}.o5m", writable_dir.to_str().unwrap(), rest), osm) {
+        let rest = hex::encode(&bytes[i - 1..bytes.len()]);
+        match osm_io::write(
+            &format!("{}/{}.o5m", writable_dir.to_str().unwrap(), rest),
+            osm,
+        ) {
             Ok(_) => {
                 return 1;
             }
