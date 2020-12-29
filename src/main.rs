@@ -130,3 +130,44 @@ fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool,
 
     return Ok(true);
 }
+
+#[test]
+fn read_write_fixture() {
+    // Create a builder.
+    let mut builder = OsmBuilder::default();
+
+    // Add a polygon to the map.
+    builder.add_polygon(
+        vec![
+            vec![
+                // Outer polygon
+                (66.29, -3.177),
+                (66.29, -0.9422),
+                (64.43, -0.9422),
+                (64.43, -3.177),
+                (66.29, -3.177),
+            ],
+            vec![
+                // One inner polygon
+                (66.0, -2.25),
+                (65.7, -2.5),
+                (65.7, -2.0),
+                (66.0, -2.25),
+            ],
+            // Add more inner polygons here.
+        ],
+        vec![("natural", "water")],
+    );
+
+    // Add polyline to the map.
+    builder.add_polyline(vec![(66.29, 1.2), (64.43, 1.2)], vec![("power", "line")]);
+
+    // Add point
+    builder.add_point((66.19, 1.3), vec![("power", "tower")]);
+
+    // Build into Osm structure.
+    let osm = builder.build();
+
+    let writer = denormalize::Writer::new(output);
+    writer.add_node(osm.nodes[0]);
+}
