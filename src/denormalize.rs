@@ -10,6 +10,10 @@ pub struct Writer {
     cache: LruCache<String, bool>,
 }
 
+pub struct Reader {
+    output: String,
+}
+
 fn create_directory(path: &str) {
     match fs::create_dir(path) {
         Ok(_) => {
@@ -18,6 +22,47 @@ fn create_directory(path: &str) {
         Err(_e) => {
             //eprintln!("{}", _e);
         }
+    }
+}
+
+impl Reader {
+    pub fn new(output: &str) -> Reader {
+        return Reader {
+            output: output.to_string(),
+        };
+    }
+
+    pub fn read_node(&self, id: i64) -> vadeen_osm::Node {
+        let osm = self.read("nodes", id);
+        return osm.nodes[0].clone();
+    }
+
+    pub fn read_way(&self, id: i64) -> vadeen_osm::Way {
+        let osm = self.read("ways", id);
+        return osm.ways[0].clone();
+    }
+
+    pub fn read_relation(&self, id: i64) -> vadeen_osm::Relation {
+        let osm = self.read("relations", id);
+        return osm.relations[0].clone();
+    }
+
+    fn read(&self, dir: &str, id: i64) -> vadeen_osm::Osm {
+        let bytes = id.to_be_bytes();
+        let mut i = 0;
+
+        let mut readable = PathBuf::new();
+        readable.push(&self.output);
+        readable.push(&dir);
+        while i < bytes.len() {
+            let pre = hex::encode(&bytes[i..i + 1]);
+            i += 1;
+            readable.push(&pre);
+        }
+
+        let rest = hex::encode(&bytes[i - 1..bytes.len()]);
+        let osm = osm_io::read(&format!("{}/{}.o5m", readable.to_str().unwrap(), rest));
+        return osm.unwrap();
     }
 }
 

@@ -5,7 +5,7 @@ mod denormalize;
 use osmpbf::{Element, ElementReader};
 use std::env;
 use vadeen_osm::osm_io::error::Error;
-use vadeen_osm::{geo::Coordinate, Node, Relation, Tag, Way};
+use vadeen_osm::{geo::Coordinate, Node, OsmBuilder, Relation, Tag, Way};
 
 fn main() -> std::result::Result<(), Error> {
     let args: Vec<String> = env::args().collect();
@@ -168,6 +168,15 @@ fn read_write_fixture() {
     // Build into Osm structure.
     let osm = builder.build();
 
-    let writer = denormalize::Writer::new(output);
-    writer.add_node(osm.nodes[0]);
+    let output = "testoutput";
+    let mut writer = denormalize::Writer::new(output);
+    let node = osm.nodes[0].clone();
+    let orig_node = osm.nodes[0].clone();
+    writer.add_node(node);
+
+    let reader = denormalize::Reader::new(output);
+    let read_node = reader.read_node(orig_node.id);
+    assert_eq!(read_node.id, orig_node.id);
+    assert_eq!(read_node.coordinate, orig_node.coordinate);
+    assert_eq!(read_node.meta, orig_node.meta);
 }
