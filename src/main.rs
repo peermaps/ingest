@@ -171,12 +171,25 @@ fn read_write_fixture() {
     let output = "testoutput";
     let mut writer = denormalize::Writer::new(output);
     let node = osm.nodes[0].clone();
-    let orig_node = osm.nodes[0].clone();
-    writer.add_node(node);
+    let rel = osm.relations[0].clone();
+    let way = osm.ways[0].clone();
+    writer.add_node(osm.nodes[0].clone());
+    writer.add_way(osm.ways[0].clone());
+    writer.add_relation(osm.relations[0].clone());
 
     let reader = denormalize::Reader::new(output);
-    let read_node = reader.read_node(orig_node.id);
-    assert_eq!(read_node.id, orig_node.id);
-    assert_eq!(read_node.coordinate, orig_node.coordinate);
-    assert_eq!(read_node.meta, orig_node.meta);
+    let read_node = reader.read_node(node.id);
+    let read_way = reader.read_way(way.id);
+    let read_rel = reader.read_relation(rel.id);
+    assert_eq!(read_node.id, node.id);
+    assert_eq!(read_node.coordinate, node.coordinate);
+    assert_eq!(read_node.meta, node.meta);
+
+    assert_eq!(read_way.id, way.id);
+    assert_eq!(read_way.refs, way.refs);
+    assert_eq!(read_way.meta, way.meta);
+
+    assert_eq!(read_rel.id, rel.id);
+    assert_eq!(read_rel.members, rel.members);
+    assert_eq!(read_rel.meta, rel.meta);
 }

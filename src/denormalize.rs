@@ -3,7 +3,7 @@ use lru::LruCache;
 use std::fs;
 use std::path::{Path, PathBuf};
 use vadeen_osm::osm_io;
-use vadeen_osm::Osm;
+use vadeen_osm::{Osm, OsmBuilder};
 
 pub struct Writer {
     output: String,
@@ -61,8 +61,15 @@ impl Reader {
         }
 
         let rest = hex::encode(&bytes[i - 1..bytes.len()]);
-        let osm = osm_io::read(&format!("{}/{}.o5m", readable.to_str().unwrap(), rest));
-        return osm.unwrap();
+        match osm_io::read(&format!("{}/{}.o5m", readable.to_str().unwrap(), rest)) {
+            Ok(osm) => {
+                return osm;
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                return OsmBuilder::default().build();
+            }
+        }
     }
 }
 
