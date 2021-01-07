@@ -1,4 +1,3 @@
-use crate::denormalize::Writer;
 use hex;
 use std::path::PathBuf;
 use vadeen_osm::osm_io;
@@ -58,6 +57,7 @@ impl Reader {
 
 #[test]
 fn read_write_fixture() {
+    use crate::denormalize::Writer;
     // Create a builder.
     let mut builder = OsmBuilder::default();
 

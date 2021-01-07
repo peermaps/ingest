@@ -59,7 +59,7 @@ impl Writer {
                     let written = writable_dir.to_str().unwrap();
                     create_directory(written);
                     self.cache.put(written.to_string(), true);
-                    println!("{}", written);
+                    //println!("{}", written);
                 }
             }
         }
