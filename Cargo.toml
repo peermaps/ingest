@@ -1,10 +1,13 @@
 [package]
-name = "ingest"
-version = "0.1.0"
+name = "peermaps_ingest"
+description = "Convert OSM data into the peermaps database format"
+version = "1.0.0"
 authors = ["okdistribute <633012+okdistribute@users.noreply.github.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+readme = "README.md"
+repository = "https://github.com/peermaps/ingest"
+documentation = "https://docs.rs/ingest"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 vadeen_osm = "0.4.1"

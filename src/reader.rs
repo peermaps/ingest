@@ -57,7 +57,7 @@ impl Reader {
 
 #[test]
 fn read_write_fixture() {
-    use crate::denormalize::Writer;
+    use crate::Writer;
     // Create a builder.
     let mut builder = OsmBuilder::default();
 

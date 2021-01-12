@@ -100,3 +100,58 @@ impl Writer {
         return self.write("nodes", id, &osm);
     }
 }
+
+#[test]
+fn write_node() {
+    use vadeen_osm::*;
+    let output = "testoutput";
+    let mut writer = Writer::new(output);
+
+    let node = Node {
+        id: 1,
+        coordinate: (66.29, -3.177).into(),
+        meta: Meta {
+            tags: vec![("key", "value").into()],
+            version: Some(3),
+            author: Some(AuthorInformation {
+                created: 12345678,
+                change_set: 1,
+                uid: 1234,
+                user: "Username".to_string(),
+            }),
+        },
+    };
+    writer.add_node(node);
+    fs::remove_dir_all(output);
+}
+
+#[test]
+fn write_way() {
+    use vadeen_osm::*;
+    let output = "testoutput";
+    let mut writer = Writer::new(output);
+
+    let way = Way {
+        id: 2,
+        refs: vec![1],
+        meta: Default::default(),
+    };
+    writer.add_way(way);
+    fs::remove_dir_all(output);
+}
+
+#[test]
+fn write_rel() {
+    use vadeen_osm::*;
+    let output = "testoutput";
+    let mut writer = Writer::new(output);
+
+    let relation = Relation {
+        id: 3,
+        members: vec![RelationMember::Way(2, "role".to_owned())],
+        meta: Default::default(),
+    };
+
+    writer.add_relation(relation);
+    fs::remove_dir_all(output);
+}

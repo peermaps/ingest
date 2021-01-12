@@ -1,8 +1,7 @@
 //use georender_pack::encode;
+use ingest::Writer;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
-pub mod denormalize;
-pub mod reader;
 mod tags;
 use osmpbf::{Element, ElementReader};
 use std::env;
@@ -20,7 +19,7 @@ fn main() -> std::result::Result<(), Error> {
 
 fn write_denormalized_data(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
     let reader = ElementReader::from_path(pbf).unwrap();
-    let writer = Arc::new(Mutex::new(denormalize::Writer::new(output)));
+    let writer = Arc::new(Mutex::new(Writer::new(output)));
 
     let total = reader
         .par_map_reduce(
