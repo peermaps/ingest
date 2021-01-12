@@ -5,7 +5,7 @@ Converts OSM data into the peermaps on-disk format.
 ## Usage
 
 ```rust
-use ingest;
+use peermaps_ingest;
 use vadeen_osm::*;
 
 let writer = ingest::Writer::new(output);
