@@ -299,18 +299,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ingest"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "hex",
- "lru",
- "osmpbf",
- "rand",
- "vadeen_osm",
-]
-
-[[package]]
 name = "itertools"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,6 +434,18 @@ dependencies = [
  "memmap",
  "protobuf",
  "rayon",
+]
+
+[[package]]
+name = "peermaps_ingest"
+version = "1.0.0"
+dependencies = [
+ "criterion",
+ "hex",
+ "lru",
+ "osmpbf",
+ "rand",
+ "vadeen_osm",
 ]
 
 [[package]]

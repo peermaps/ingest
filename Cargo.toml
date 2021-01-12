@@ -1,6 +1,6 @@
 [package]
 name = "peermaps_ingest"
-description = "Convert OSM data into the peermaps database format"
+description = "Convert OSM data into the peermaps on-disk format"
 version = "1.0.0"
 authors = ["okdistribute <633012+okdistribute@users.noreply.github.com>"]
 edition = "2018"

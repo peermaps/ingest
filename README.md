@@ -1,4 +1,6 @@
-# peermaps/ingest
+# peermaps_ingest
+
+Converts OSM data into the peermaps on-disk format.
 
 ## Usage
 

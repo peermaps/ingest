@@ -1,5 +1,5 @@
 //use georender_pack::encode;
-use ingest::Writer;
+use peermaps_ingest::Writer;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 mod tags;
