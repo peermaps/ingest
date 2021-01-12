@@ -104,7 +104,7 @@ impl Writer {
 #[test]
 fn write_node() {
     use vadeen_osm::*;
-    let output = "testoutput";
+    let output = "testoutput_node";
     let mut writer = Writer::new(output);
 
     let node = Node {
@@ -128,7 +128,7 @@ fn write_node() {
 #[test]
 fn write_way() {
     use vadeen_osm::*;
-    let output = "testoutput";
+    let output = "testoutput_way";
     let mut writer = Writer::new(output);
 
     let way = Way {
@@ -143,7 +143,7 @@ fn write_way() {
 #[test]
 fn write_rel() {
     use vadeen_osm::*;
-    let output = "testoutput";
+    let output = "testoutput_rel";
     let mut writer = Writer::new(output);
 
     let relation = Relation {

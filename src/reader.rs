@@ -93,7 +93,7 @@ fn read_write_fixture() {
     // Build into Osm structure.
     let osm = builder.build();
 
-    let output = "testoutput";
+    let output = "testoutput_rw";
     let mut writer = Writer::new(output);
     let node = osm.nodes[0].clone();
     let rel = osm.relations[0].clone();
