@@ -96,9 +96,12 @@ fn read_write_fixture() {
 
     let output = "testoutput_rw";
     let mut writer = Writer::new(output);
+
     let node = osm.nodes[0].clone();
     let rel = osm.relations[0].clone();
     let way = osm.ways[0].clone();
+    println!("{}", way.id);
+
     writer.add_node(osm.nodes[0].clone());
     writer.add_way(osm.ways[0].clone());
     writer.add_relation(osm.relations[0].clone());
@@ -107,6 +110,7 @@ fn read_write_fixture() {
     let read_node = reader.read_node(node.id);
     let read_way = reader.read_way(way.id);
     let read_rel = reader.read_relation(rel.id);
+
     assert_eq!(read_node.id, node.id);
     assert_eq!(read_node.coordinate, node.coordinate);
     assert_eq!(read_node.meta, node.meta);

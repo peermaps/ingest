@@ -437,7 +437,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "peermaps_ingest"
+name = "peermaps-ingest"
 version = "1.0.0"
 dependencies = [
  "criterion",
