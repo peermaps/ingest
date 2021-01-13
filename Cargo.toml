@@ -16,6 +16,8 @@ hex = "0.4.2"
 lru = "0.6.1"
 criterion = "0.3"
 rand = "0.8.1"
+eyros = "3.0.0"
+jwalk = "0.6.0"
 
 [[bench]]
 name = "large_area"
