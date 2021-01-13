@@ -1,4 +1,5 @@
 use hex;
+use std::fs;
 use std::path::PathBuf;
 use vadeen_osm::osm_io;
 use vadeen_osm::OsmBuilder;
@@ -117,4 +118,5 @@ fn read_write_fixture() {
     assert_eq!(read_rel.id, rel.id);
     assert_eq!(read_rel.members, rel.members);
     assert_eq!(read_rel.meta, rel.meta);
+    fs::remove_dir_all(output);
 }
