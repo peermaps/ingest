@@ -205,11 +205,17 @@ async fn read_write_fixture() -> Result<(), E> {
 
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db_path)).await?;
 
-    let bbox = ((180.0, -180.0), (90.0, -90.0));
+    let bbox = ((-180.0, -90.0), (180.0, 90.0));
     let mut stream = db.query(&bbox).await?;
 
     while let Some(result) = stream.next().await {
-        println!("{:?}", result?);
+        assert_eq!(
+            result.unwrap().0,
+            Mix2::new(
+                Mix::Scalar(read_node.coordinate.lon()),
+                Mix::Scalar(read_node.coordinate.lat())
+            )
+        );
     }
 
     //fs::remove_dir_all(output);
