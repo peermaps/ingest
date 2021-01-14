@@ -52,16 +52,15 @@ let node = Node {
 writer.add_node(node)
 ```
 
-
-### ```writer.add_node(node: vadeen_osm::Node) -> u64```
+#### ```writer.add_node(node: vadeen_osm::Node) -> u64```
 
 Returns the id of the node.
 
-### ```writer.add_way(way: vadeen_osm::Way) -> u64```
+#### ```writer.add_way(way: vadeen_osm::Way) -> u64```
 
 Returns the id of the way. 
 
-### ```writer.add_relation(relationeay: vadeen_osm::Relation) -> u64```
+#### ```writer.add_relation(relationeay: vadeen_osm::Relation) -> u64```
 
 Returns the id of the relation. 
 
@@ -69,15 +68,26 @@ Returns the id of the relation.
 
 Reads nodes from the on-disk format given their id.
 
-### ```reader.walk_nodes()```
+```
+use peermaps_ingest::Reader;
+
+let reader = Reader::new(output);
+let node = reader.read_node(291737181);
+
+let tags = node.meta.tags;
+let id = node.id;
+let coord = node.coordinate;
+```
+
+#### ```reader.walk_nodes()```
 
 Returns an iterator of all nodes.
 
-### ```reader.read_node(id: u64) -> vadeen_osm::Node```
+#### ```reader.read_node(id: u64) -> vadeen_osm::Node```
 
 Returns the node with the given id.
 
-### ```reader.read_way(id: u64) -> vadeen_osm::Way```
+#### ```reader.read_way(id: u64) -> vadeen_osm::Way```
 
 Returns the way with the given id.
 
