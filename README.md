@@ -52,6 +52,40 @@ let node = Node {
 writer.add_node(node)
 ```
 
+
+### ```writer.add_node(node: vadeen_osm::Node) -> u64```
+
+Returns the id of the node.
+
+### ```writer.add_way(way: vadeen_osm::Way) -> u64```
+
+Returns the id of the way. 
+
+### ```writer.add_relation(relationeay: vadeen_osm::Relation) -> u64```
+
+Returns the id of the relation. 
+
+### ```ingest::Reader(directory: &str)```
+
+Reads nodes from the on-disk format given their id.
+
+### ```reader.walk_nodes()```
+
+Returns an iterator of all nodes.
+
+### ```reader.read_node(id: u64) -> vadeen_osm::Node```
+
+Returns the node with the given id.
+
+### ```reader.read_way(id: u64) -> vadeen_osm::Way```
+
+Returns the way with the given id.
+
+### ```reader.read_relation(id: u64) -> vadeen_osm::Relation```
+
+Returns the relation with the given id.
+
+
 ## Development 
 
 For integration tests

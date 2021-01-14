@@ -1,5 +1,5 @@
 use hex;
-use jwalk::{DirEntry, WalkDir, WalkDirGeneric};
+use jwalk::{WalkDir, WalkDirGeneric};
 use std::path::PathBuf;
 use vadeen_osm::osm_io;
 use vadeen_osm::OsmBuilder;
@@ -22,22 +22,22 @@ impl Reader {
         return WalkDir::new(nodes);
     }
 
-    pub fn read_node(&self, id: i64) -> vadeen_osm::Node {
+    pub fn read_node(&self, id: u64) -> vadeen_osm::Node {
         let osm = self.read("nodes", id);
         return osm.nodes[0].clone();
     }
 
-    pub fn read_way(&self, id: i64) -> vadeen_osm::Way {
+    pub fn read_way(&self, id: u64) -> vadeen_osm::Way {
         let osm = self.read("ways", id);
         return osm.ways[0].clone();
     }
 
-    pub fn read_relation(&self, id: i64) -> vadeen_osm::Relation {
+    pub fn read_relation(&self, id: u64) -> vadeen_osm::Relation {
         let osm = self.read("relations", id);
         return osm.relations[0].clone();
     }
 
-    fn read(&self, dir: &str, id: i64) -> vadeen_osm::Osm {
+    fn read(&self, dir: &str, id: u64) -> vadeen_osm::Osm {
         let bytes = id.to_be_bytes();
         let mut i = 0;
 

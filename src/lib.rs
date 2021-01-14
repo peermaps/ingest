@@ -8,7 +8,6 @@ pub use reader::*;
 
 mod tags;
 
-use async_std::prelude::*;
 use eyros::{Mix, Mix2, Row, DB};
 use georender_pack::encode;
 use osmpbf::{Element, ElementReader};
@@ -16,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 use vadeen_osm::osm_io::error::Error;
-use vadeen_osm::{geo::Coordinate, Node, Relation, Tag, Way};
+use vadeen_osm::{geo::Coordinate, Node, Relation, Way};
 
 type P = Mix2<f32, f32>;
 type V = Vec<u8>;
@@ -27,7 +26,7 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
     for entry in reader.walk_nodes() {
-        let id: i64 = entry?.file_name().to_str().unwrap().parse()?;
+        let id: u64 = entry?.file_name().to_str().unwrap().parse()?;
         let node = reader.read_node(id);
         let point = (node.coordinate.lon as f64, node.coordinate.lat as f64);
         let tags = node
@@ -37,7 +36,7 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
             .map(|t| (t.key.as_ref(), t.value.as_ref()))
             .collect();
 
-        let value = encode::node(id as u64, point, tags)?;
+        let value = encode::node(id, point, tags)?;
         let row = Row::Insert(
             Mix2::new(Mix::Scalar(point.0 as f32), Mix::Scalar(point.1 as f32)),
             value,
@@ -175,9 +174,9 @@ fn read_write_fixture() {
     writer.add_relation(osm.relations[0].clone());
 
     let reader = Reader::new(output);
-    let read_node = reader.read_node(node.id);
-    let read_way = reader.read_way(way.id);
-    let read_rel = reader.read_relation(rel.id);
+    let read_node = reader.read_node(node.id as u64);
+    let read_way = reader.read_way(way.id as u64);
+    let read_rel = reader.read_relation(rel.id as u64);
 
     assert_eq!(read_node.id, node.id);
     assert_eq!(read_node.coordinate, node.coordinate);

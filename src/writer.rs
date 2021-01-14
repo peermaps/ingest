@@ -70,7 +70,7 @@ impl Writer {
             osm,
         ) {
             Ok(_) => {
-                return 1;
+                return id as u64;
             }
             Err(e) => {
                 eprintln!("{}", e);
