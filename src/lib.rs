@@ -17,7 +17,7 @@ use std::vec::Vec;
 use vadeen_osm::osm_io::error::Error;
 use vadeen_osm::{geo::Coordinate, Node, Relation, Way};
 
-type P = Mix2<f32, f32>;
+type P = Mix2<f64, f64>;
 type V = Vec<u8>;
 type E = Box<dyn std::error::Error + Sync + Send>;
 
@@ -37,10 +37,7 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
             .collect();
 
         let value = encode::node(id, point, tags)?;
-        let row = Row::Insert(
-            Mix2::new(Mix::Scalar(point.0 as f32), Mix::Scalar(point.1 as f32)),
-            value,
-        );
+        let row = Row::Insert(Mix2::new(Mix::Scalar(point.0), Mix::Scalar(point.1)), value);
 
         let mut batch = Vec::new();
         batch.push(row);
