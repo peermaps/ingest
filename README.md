@@ -31,7 +31,7 @@ Writes osm objects to the on-disk format.
 use peermaps_ingest;
 use vadeen_osm::*;
 
-let mut writer = ingest::Writer::new(output);
+let mut writer = ingest::Writer::new("peermaps.db");
 
 let node = Node {
     id: 1,
@@ -68,10 +68,10 @@ Returns the id of the relation.
 
 Reads nodes from the on-disk format given their id.
 
-```
+```rust
 use peermaps_ingest::Reader;
 
-let reader = Reader::new(output);
+let reader = Reader::new("peermaps.db");
 let node = reader.read_node(291737181);
 
 let tags = node.meta.tags;
