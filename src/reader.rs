@@ -19,6 +19,8 @@ impl Reader {
         let mut nodes = PathBuf::new();
         nodes.push(&self.output);
         nodes.push("nodes");
+        println!("nodes {:?}", nodes.to_str());
+
         return WalkDir::new(nodes);
     }
 
@@ -37,7 +39,19 @@ impl Reader {
         return osm.relations[0].clone();
     }
 
-    fn read(&self, dir: &str, id: u64) -> vadeen_osm::Osm {
+    pub fn read_raw(&self, filepath: &str) -> vadeen_osm::Osm {
+        match osm_io::read(filepath) {
+            Ok(osm) => {
+                return osm;
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                return OsmBuilder::default().build();
+            }
+        }
+    }
+
+    pub fn read(&self, dir: &str, id: u64) -> vadeen_osm::Osm {
         let bytes = id.to_be_bytes();
         let mut i = 0;
 
@@ -51,14 +65,7 @@ impl Reader {
         }
 
         let rest = hex::encode(&bytes[i - 1..bytes.len()]);
-        match osm_io::read(&format!("{}/{}.o5m", readable.to_str().unwrap(), rest)) {
-            Ok(osm) => {
-                return osm;
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-                return OsmBuilder::default().build();
-            }
-        }
+        let filepath = format!("{}/{}.o5m", readable.to_str().unwrap(), rest);
+        return self.read_raw(&filepath);
     }
 }

@@ -11,6 +11,7 @@ mod tags;
 use eyros::{Mix, Mix2, Row, DB};
 use georender_pack::encode;
 use osmpbf::{Element, ElementReader};
+use std::iter::Iterator;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
@@ -26,9 +27,19 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
     for entry in reader.walk_nodes() {
-        let id: u64 = entry?.file_name().to_str().unwrap().parse()?;
-        let node = reader.read_node(id);
-        let point = (node.coordinate.lon as f64, node.coordinate.lat as f64);
+        let buf = entry?.path();
+        let filepath = buf.to_str().unwrap();
+
+        let retain = filepath.ends_with("o5m");
+        if !retain {
+            continue;
+        }
+
+        println!("entry {:}", filepath);
+        let osm = reader.read_raw(filepath);
+        let node = osm.nodes[0].clone();
+        let id = node.id as u64;
+        let point = (node.coordinate.lon(), node.coordinate.lat());
         let tags = node
             .meta
             .tags
@@ -47,7 +58,7 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     return Ok(());
 }
 
-pub fn denormalize(pbf: &str, output: &str) -> std::result::Result<bool, Error> {
+pub fn denormalize(pbf: &str, output: &str) -> Result<bool, Error> {
     let reader = ElementReader::from_path(pbf).unwrap();
     let writer = Arc::new(Mutex::new(Writer::new(output)));
 
@@ -117,9 +128,11 @@ pub fn denormalize(pbf: &str, output: &str) -> std::result::Result<bool, Error> 
     return Ok(true);
 }
 
-#[test]
-fn read_write_fixture() {
+#[async_std::test]
+async fn read_write_fixture() -> Result<(), E> {
     use crate::Writer;
+    use async_std::prelude::*;
+    use async_std::stream::*;
     use std::fs;
     use vadeen_osm::OsmBuilder;
 
@@ -153,18 +166,18 @@ fn read_write_fixture() {
     builder.add_polyline(vec![(66.29, 1.2), (64.43, 1.2)], vec![("power", "line")]);
 
     // Add point
-    builder.add_point((66.19, 1.3), vec![("power", "tower")]);
+    let coordinates = (66.19, 1.3);
+    builder.add_point(coordinates, vec![("power", "tower")]);
 
     // Build into Osm structure.
     let osm = builder.build();
 
-    let output = "testoutput_rw";
+    let output = "denormalized_test";
     let mut writer = Writer::new(output);
 
     let node = osm.nodes[0].clone();
     let rel = osm.relations[0].clone();
     let way = osm.ways[0].clone();
-    println!("{}", way.id);
 
     writer.add_node(osm.nodes[0].clone());
     writer.add_way(osm.ways[0].clone());
@@ -188,7 +201,19 @@ fn read_write_fixture() {
     assert_eq!(read_rel.meta, rel.meta);
 
     let db_path = "test_db";
-    write_to_db(output, "test_db");
+    write_to_db(output, db_path).await;
 
-    fs::remove_dir_all(output);
+    let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db_path)).await?;
+
+    let bbox = ((180.0, -180.0), (90.0, -90.0));
+    let mut stream = db.query(&bbox).await?;
+
+    while let Some(result) = stream.next().await {
+        println!("{:?}", result?);
+    }
+
+    //fs::remove_dir_all(output);
+    //fs::remove_dir_all(db_path);
+
+    Ok(())
 }
