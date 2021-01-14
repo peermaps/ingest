@@ -1,6 +1,5 @@
 use hex;
-use jwalk::WalkDir;
-use std::fs;
+use jwalk::{DirEntry, WalkDir, WalkDirGeneric};
 use std::path::PathBuf;
 use vadeen_osm::osm_io;
 use vadeen_osm::OsmBuilder;
@@ -16,7 +15,7 @@ impl Reader {
         };
     }
 
-    pub fn walk_nodes() {
+    pub fn walk_nodes(&self) -> WalkDirGeneric<((), ())> {
         let mut nodes = PathBuf::new();
         nodes.push(&self.output);
         nodes.push("nodes");

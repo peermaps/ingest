@@ -6,47 +6,47 @@ pub use writer::*;
 mod reader;
 pub use reader::*;
 
+mod tags;
+
 use async_std::prelude::*;
 use eyros::{Mix, Mix2, Row, DB};
 use georender_pack::encode;
 use osmpbf::{Element, ElementReader};
-use peermaps_ingest::Writer;
-use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
-use tags;
 use vadeen_osm::osm_io::error::Error;
-use vadeen_osm::{geo::Coordinate, Node, Relation, Way};
+use vadeen_osm::{geo::Coordinate, Node, Relation, Tag, Way};
 
 type P = Mix2<f32, f32>;
-type V = u32;
+type V = Vec<u8>;
 type E = Box<dyn std::error::Error + Sync + Send>;
 
-#[async_std]
-pub fn write_to_db(output: &str, db: &str) -> Result<(), E> {
+pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let reader = Reader::new(output);
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
     for entry in reader.walk_nodes() {
-        let id: i64 = entry.file_name().parse();
+        let id: i64 = entry?.file_name().to_str().unwrap().parse()?;
         let node = reader.read_node(id);
+        let point = (node.coordinate.lon as f64, node.coordinate.lat as f64);
+        let tags = node
+            .meta
+            .tags
+            .iter()
+            .map(|t| (t.key.as_ref(), t.value.as_ref()))
+            .collect();
 
-        let batch = vec![Row::Insert(
-            Mix2::new(
-                Mix::Scalar(node.coordinate.lon),
-                Mix::Scalar(node.coordinate.lat),
-            ),
-            value,
-        )];
-
-        db.batch(&batch).await?;
-        /*
-        Row::Insert(
-            Mix2::new(Mix::Interval(xmin, xmax), Mix::Interval(ymin, ymax)),
+        let value = encode::node(id as u64, point, tags)?;
+        let row = Row::Insert(
+            Mix2::new(Mix::Scalar(point.0 as f32), Mix::Scalar(point.1 as f32)),
             value,
         );
-        */
+
+        let mut batch = Vec::new();
+        batch.push(row);
+
+        db.batch(&batch.as_slice()).await?;
     }
     return Ok(());
 }
@@ -124,6 +124,9 @@ pub fn denormalize(pbf: &str, output: &str) -> std::result::Result<bool, Error> 
 #[test]
 fn read_write_fixture() {
     use crate::Writer;
+    use std::fs;
+    use vadeen_osm::OsmBuilder;
+
     // Create a builder.
     let mut builder = OsmBuilder::default();
 
@@ -189,7 +192,7 @@ fn read_write_fixture() {
     assert_eq!(read_rel.meta, rel.meta);
 
     let db_path = "test_db";
-
     write_to_db(output, "test_db");
+
     fs::remove_dir_all(output);
 }
