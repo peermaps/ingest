@@ -1,8 +1,9 @@
 use hex;
-use jwalk::{WalkDir, WalkDirGeneric};
+use jwalk::{DirEntry, DirEntryIter, Error, WalkDir};
 use std::path::PathBuf;
+use std::result::Result;
 use vadeen_osm::osm_io;
-use vadeen_osm::OsmBuilder;
+use vadeen_osm::{Osm, OsmBuilder};
 
 pub struct Reader {
     output: String,
@@ -15,13 +16,27 @@ impl Reader {
         };
     }
 
-    pub fn walk_nodes(&self) -> WalkDirGeneric<((), ())> {
+    pub fn walk(
+        &self,
+    ) -> std::iter::Map<DirEntryIter<((), ())>, fn(Result<DirEntry<((), ())>, Error>) -> Osm> {
         let mut nodes = PathBuf::new();
         nodes.push(&self.output);
         nodes.push("nodes");
         println!("nodes {:?}", nodes.to_str());
+        fn convert(entry: Result<DirEntry<((), ())>, Error>) -> Osm {
+            let buf = entry.unwrap().path();
+            let filepath = buf.to_str().unwrap();
 
-        return WalkDir::new(nodes);
+            let retain = filepath.ends_with("o5m");
+            if retain {
+                return read_raw(filepath);
+            } else {
+                return OsmBuilder::default().build();
+            }
+        }
+
+        let walker = WalkDir::new(nodes).min_depth(3);
+        return walker.into_iter().map(convert);
     }
 
     pub fn read_node(&self, id: u64) -> vadeen_osm::Node {
@@ -39,18 +54,6 @@ impl Reader {
         return osm.relations[0].clone();
     }
 
-    pub fn read_raw(&self, filepath: &str) -> vadeen_osm::Osm {
-        match osm_io::read(filepath) {
-            Ok(osm) => {
-                return osm;
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-                return OsmBuilder::default().build();
-            }
-        }
-    }
-
     pub fn read(&self, dir: &str, id: u64) -> vadeen_osm::Osm {
         let bytes = id.to_be_bytes();
         let mut i = 0;
@@ -66,6 +69,18 @@ impl Reader {
 
         let rest = hex::encode(&bytes[i - 1..bytes.len()]);
         let filepath = format!("{}/{}.o5m", readable.to_str().unwrap(), rest);
-        return self.read_raw(&filepath);
+        return read_raw(&filepath);
+    }
+}
+
+pub fn read_raw(filepath: &str) -> vadeen_osm::Osm {
+    match osm_io::read(filepath) {
+        Ok(osm) => {
+            return osm;
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            return OsmBuilder::default().build();
+        }
     }
 }

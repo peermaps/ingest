@@ -26,34 +26,26 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let reader = Reader::new(output);
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
-    for entry in reader.walk_nodes() {
-        let buf = entry?.path();
-        let filepath = buf.to_str().unwrap();
+    for osm in reader.walk() {
+        if osm.nodes.len() > 0 {
+            let node = osm.nodes[0].clone();
+            let id = node.id as u64;
+            let point = (node.coordinate.lon(), node.coordinate.lat());
+            let tags = node
+                .meta
+                .tags
+                .iter()
+                .map(|t| (t.key.as_ref(), t.value.as_ref()))
+                .collect();
 
-        let retain = filepath.ends_with("o5m");
-        if !retain {
-            continue;
+            let value = encode::node(id, point, tags)?;
+            let row = Row::Insert(Mix2::new(Mix::Scalar(point.0), Mix::Scalar(point.1)), value);
+
+            let mut batch = Vec::new();
+            batch.push(row);
+
+            db.batch(&batch.as_slice()).await?;
         }
-
-        println!("entry {:}", filepath);
-        let osm = reader.read_raw(filepath);
-        let node = osm.nodes[0].clone();
-        let id = node.id as u64;
-        let point = (node.coordinate.lon(), node.coordinate.lat());
-        let tags = node
-            .meta
-            .tags
-            .iter()
-            .map(|t| (t.key.as_ref(), t.value.as_ref()))
-            .collect();
-
-        let value = encode::node(id, point, tags)?;
-        let row = Row::Insert(Mix2::new(Mix::Scalar(point.0), Mix::Scalar(point.1)), value);
-
-        let mut batch = Vec::new();
-        batch.push(row);
-
-        db.batch(&batch.as_slice()).await?;
     }
     return Ok(());
 }
