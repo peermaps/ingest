@@ -21,7 +21,6 @@ impl Reader {
     ) -> std::iter::Map<DirEntryIter<((), ())>, fn(Result<DirEntry<((), ())>, Error>) -> Osm> {
         let mut nodes = PathBuf::new();
         nodes.push(&self.output);
-        nodes.push("nodes");
         println!("nodes {:?}", nodes.to_str());
         fn convert(entry: Result<DirEntry<((), ())>, Error>) -> Osm {
             let buf = entry.unwrap().path();

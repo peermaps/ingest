@@ -11,6 +11,7 @@ mod tags;
 use eyros::{Mix, Mix2, Row, DB};
 use georender_pack::encode;
 use osmpbf::{Element, ElementReader};
+use std::collections::HashMap;
 use std::iter::Iterator;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,6 +28,44 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
     for osm in reader.walk() {
+        if osm.ways.len() > 0 {
+            let way = osm.ways[0].clone();
+            let id = way.id as u64;
+            let refs = way.refs.clone();
+            let mut deps = HashMap::new();
+            let mut xmin = 0.0;
+            let mut xmax = 0.0;
+            let mut ymin = 0.0;
+            let mut ymax = 0.0;
+            for node_id in way.refs {
+                println!("Reading node {}", node_id);
+                let node = reader.read_node(node_id as u64);
+                let point = (node.coordinate.lon(), node.coordinate.lat());
+                xmin = point.0;
+                ymin = point.1;
+                xmax = point.0;
+                ymax = point.1;
+                deps.insert(node_id, point);
+            }
+
+            let tags = way
+                .meta
+                .tags
+                .iter()
+                .map(|t| (t.key.as_ref(), t.value.as_ref()))
+                .collect();
+
+            let value = encode::way(id, tags, refs, &deps)?;
+            let mut batch = Vec::new();
+            let row = Row::Insert(
+                Mix2::new(Mix::Interval(xmin, xmax), Mix::Interval(ymin, ymax)),
+                value,
+            );
+            batch.push(row);
+
+            db.batch(&batch.as_slice()).await?;
+        }
+
         if osm.nodes.len() > 0 {
             let node = osm.nodes[0].clone();
             let id = node.id as u64;
@@ -186,6 +225,7 @@ async fn read_write_fixture() -> Result<(), E> {
 
     assert_eq!(read_way.id, way.id);
     assert_eq!(read_way.refs, way.refs);
+    println!("{}", way.refs[0]);
     assert_eq!(read_way.meta, way.meta);
 
     assert_eq!(read_rel.id, rel.id);
