@@ -34,22 +34,37 @@ impl Reader {
         }
 
         let walker = WalkDir::new(nodes).min_depth(3);
-        return walker.into_iter().map(convert);
+        return walker.into_iter().map(convert_to_osm);
     }
 
-    pub fn read_node(&self, id: u64) -> vadeen_osm::Node {
+    pub fn read_node(&self, id: u64) -> Option<vadeen_osm::Node> {
         let osm = self.read("nodes", id);
-        return osm.nodes[0].clone();
+        match osm.nodes.get(0) {
+            Some(el) => {
+                return Some(el.clone());
+            }
+            None => return None,
+        }
     }
 
-    pub fn read_way(&self, id: u64) -> vadeen_osm::Way {
+    pub fn read_way(&self, id: u64) -> Option<vadeen_osm::Way> {
         let osm = self.read("ways", id);
-        return osm.ways[0].clone();
+        match osm.ways.get(0) {
+            Some(el) => {
+                return Some(el.clone());
+            }
+            None => return None,
+        }
     }
 
-    pub fn read_relation(&self, id: u64) -> vadeen_osm::Relation {
+    pub fn read_relation(&self, id: u64) -> Option<vadeen_osm::Relation> {
         let osm = self.read("relations", id);
-        return osm.relations[0].clone();
+        match osm.relations.get(0) {
+            Some(el) => {
+                return Some(el.clone());
+            }
+            None => return None,
+        }
     }
 
     pub fn read(&self, dir: &str, id: u64) -> vadeen_osm::Osm {
@@ -77,7 +92,7 @@ pub fn read_raw(filepath: &str) -> vadeen_osm::Osm {
             return osm;
         }
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{}, {}", e, filepath);
             return OsmBuilder::default().build();
         }
     }

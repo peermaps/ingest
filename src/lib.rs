@@ -60,14 +60,19 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
             let mut ymin = 0.0;
             let mut ymax = 0.0;
             for node_id in way.refs {
-                println!("Reading node {}", node_id);
-                let node = reader.read_node(node_id as u64);
-                let point = (node.coordinate.lon(), node.coordinate.lat());
-                xmin = point.0;
-                ymin = point.1;
-                xmax = point.0;
-                ymax = point.1;
-                deps.insert(node_id, point);
+                match reader.read_node(node_id as u64) {
+                    Some(node) => {
+                        let point = (node.coordinate.lon(), node.coordinate.lat());
+                        xmin = point.0;
+                        ymin = point.1;
+                        xmax = point.0;
+                        ymax = point.1;
+                        deps.insert(node_id, point);
+                    }
+                    None => {
+                        println!("Failed to read node with id {}", node_id);
+                    }
+                }
             }
 
             let tags = way
