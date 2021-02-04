@@ -21,14 +21,36 @@ use vadeen_osm::{geo::Coordinate, Node, Relation, Way};
 
 type P = Mix2<f64, f64>;
 type V = Vec<u8>;
-type E = Box<dyn std::error::Error + Sync + Send>;
+type E = Box<dyn std::error::Error + Sync + Send + 'static>;
 
 pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let reader = Reader::new(output);
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
     for osm in reader.walk() {
+        if osm.relations.len() > 0 {
+            // osm.relations should only have 1 item
+            let relation = osm.relations[0].clone();
+            let id = relation.id as u64;
+            let members = relation.members.clone();
+            for member in members {
+                match member.role() {
+                    "node" => {
+                        let node = reader.read_node(id as u64);
+                    }
+                    "way" => {
+                        let way = reader.read_way(id as u64);
+                    }
+                    "relation" => {
+                        let relation = reader.read_relation(id as u64);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if osm.ways.len() > 0 {
+            // osm.ways should only have 1 item
             let way = osm.ways[0].clone();
             let id = way.id as u64;
             let refs = way.refs.clone();
@@ -67,6 +89,7 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
         }
 
         if osm.nodes.len() > 0 {
+            // osm.nodes should only have 1 item
             let node = osm.nodes[0].clone();
             let id = node.id as u64;
             let point = (node.coordinate.lon(), node.coordinate.lat());
@@ -89,7 +112,7 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     return Ok(());
 }
 
-pub fn denormalize(pbf: &str, output: &str) -> Result<bool, Error> {
+pub fn denormalize(pbf: &str, output: &str) -> Result<u64, Error> {
     let reader = ElementReader::from_path(pbf).unwrap();
     let writer = Arc::new(Mutex::new(Writer::new(output)));
 
@@ -102,21 +125,21 @@ pub fn denormalize(pbf: &str, output: &str) -> Result<bool, Error> {
                         coordinate: Coordinate::new(node.lat(), node.lon()),
                         meta: tags::get_meta(node.tags(), node.info()),
                     };
-                    let count = writer.lock().unwrap().add_node(node);
-                    return count;
+                    writer.lock().unwrap().add_node(node);
+                    return 1;
                 }
                 Element::DenseNode(node) => {
-                    let count = writer.lock().unwrap().add_node(vadeen_osm::Node {
+                    writer.lock().unwrap().add_node(vadeen_osm::Node {
                         id: node.id,
                         coordinate: Coordinate::new(node.lon(), node.lat()),
                         meta: tags::get_dense_meta(node.tags(), node.info().unwrap().clone()),
                     });
-                    return count;
+                    return 1;
                 }
                 Element::Relation(rel) => {
                     let mut members = Vec::new();
                     for member in rel.members() {
-                        let var_name = match member.member_type {
+                        let coverted_mem = match member.member_type {
                             osmpbf::RelMemberType::Node => vadeen_osm::RelationMember::Node(
                                 member.member_id,
                                 "node".to_string(),
@@ -131,36 +154,36 @@ pub fn denormalize(pbf: &str, output: &str) -> Result<bool, Error> {
                                 )
                             }
                         };
-                        members.push(var_name);
+                        members.push(coverted_mem);
                     }
-                    let count = writer.lock().unwrap().add_relation(Relation {
+                    writer.lock().unwrap().add_relation(Relation {
                         id: rel.id(),
                         members: members,
                         meta: tags::get_meta(rel.tags(), rel.info()),
                     });
-                    return count;
+                    return 1;
                 }
                 Element::Way(way) => {
-                    let count = writer.lock().unwrap().add_way(Way {
+                    writer.lock().unwrap().add_way(Way {
                         id: way.id(),
                         refs: way.refs().collect(),
                         meta: tags::get_meta(way.tags(), way.info()),
                     });
-                    return count;
+                    return 1;
                 }
             },
-            || 0_u64,
+            || 0,
             |a, b| a + b,
         )
         .unwrap();
 
     println!("Wrote {} elements", total);
 
-    return Ok(true);
+    return Ok(total);
 }
 
 #[async_std::test]
-async fn read_write_fixture() -> Result<(), E> {
+async fn read_write_dummy() -> Result<(), E> {
     use crate::Writer;
     use async_std::prelude::*;
     use async_std::stream::*;
@@ -215,43 +238,76 @@ async fn read_write_fixture() -> Result<(), E> {
     writer.add_relation(osm.relations[0].clone());
 
     let reader = Reader::new(output);
-    let read_node = reader.read_node(node.id as u64);
-    let read_way = reader.read_way(way.id as u64);
-    let read_rel = reader.read_relation(rel.id as u64);
-
-    assert_eq!(read_node.id, node.id);
-    assert_eq!(read_node.coordinate, node.coordinate);
-    assert_eq!(read_node.meta, node.meta);
-
-    assert_eq!(read_way.id, way.id);
-    assert_eq!(read_way.refs, way.refs);
-    println!("{}", way.refs[0]);
-    assert_eq!(read_way.meta, way.meta);
-
-    assert_eq!(read_rel.id, rel.id);
-    assert_eq!(read_rel.members, rel.members);
-    assert_eq!(read_rel.meta, rel.meta);
-
-    let db_path = "test_db";
-    write_to_db(output, db_path).await;
-
-    let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db_path)).await?;
-
-    let bbox = ((-180.0, -90.0), (180.0, 90.0));
-    let mut stream = db.query(&bbox).await?;
-
-    while let Some(result) = stream.next().await {
-        assert_eq!(
-            result.unwrap().0,
-            Mix2::new(
-                Mix::Scalar(read_node.coordinate.lon()),
-                Mix::Scalar(read_node.coordinate.lat())
-            )
-        );
+    match reader.read_node(node.id as u64) {
+        Some(read) => {
+            assert_eq!(read.id, node.id);
+            assert_eq!(read.coordinate, node.coordinate);
+            assert_eq!(read.meta, node.meta);
+        }
+        None => {
+            assert!(false, "node {} was none", node.id);
+        }
     }
 
-    //fs::remove_dir_all(output);
-    //fs::remove_dir_all(db_path);
+    match reader.read_way(way.id as u64) {
+        Some(read) => {
+            assert_eq!(read.id, way.id);
+            assert_eq!(read.refs, way.refs);
+            assert_eq!(read.meta, way.meta);
+        }
+        None => {
+            assert!(false, "way {} was none", way.id);
+        }
+    }
+
+    match reader.read_relation(rel.id as u64) {
+        Some(read) => {
+            assert_eq!(read.id, rel.id);
+            assert_eq!(read.members, rel.members);
+            assert_eq!(read.meta, rel.meta);
+        }
+        None => {
+            assert!(false, "relation {} was none", rel.id);
+        }
+    }
+
+    fs::remove_dir_all(output);
 
     Ok(())
+}
+
+#[async_std::test]
+async fn read_write_fixture() -> Result<(), E> {
+    use crate::Reader;
+    use async_std::prelude::*;
+    use async_std::stream::*;
+    use std::fs;
+    use vadeen_osm::OsmBuilder;
+    let fixture = "fixtures/somewhere.pbf";
+    let output = "fixtures/test";
+    match denormalize(fixture, output) {
+        Ok(total_elements) => {
+            let db_path = "test_db";
+            let reader = Reader::new(output);
+
+            write_to_db(output, db_path).await;
+
+            let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db_path)).await.unwrap();
+            let bbox = ((-180.0, -90.0), (180.0, 90.0));
+            let mut stream = db.query(&bbox).await.unwrap();
+
+            let mut query_elements = 0;
+
+            while let Some(result) = stream.next().await {
+                query_elements += 1;
+            }
+
+            assert_eq!(query_elements, total_elements);
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            return Ok(());
+        }
+    }
 }

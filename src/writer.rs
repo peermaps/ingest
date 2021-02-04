@@ -42,7 +42,7 @@ impl Writer {
         };
     }
 
-    fn write(&mut self, dir: &str, id: i64, osm: &Osm) -> u64 {
+    fn write(&mut self, dir: &str, id: u64, osm: &Osm) -> bool {
         let bytes = id.to_be_bytes();
         let mut i = 0;
 
@@ -70,34 +70,34 @@ impl Writer {
             osm,
         ) {
             Ok(_) => {
-                return id as u64;
+                return true;
             }
             Err(e) => {
-                eprintln!("{}", e);
-                return 0;
+                eprintln!("Failed to write {} because {}", id, e);
+                return false;
             }
         }
     }
 
-    pub fn add_relation(&mut self, relation: vadeen_osm::Relation) -> u64 {
+    pub fn add_relation(&mut self, relation: vadeen_osm::Relation) -> bool {
         let mut osm = Osm::default();
         let id = relation.id;
         osm.add_relation(relation);
-        return self.write("relations", id, &osm);
+        return self.write("relations", id as u64, &osm);
     }
 
-    pub fn add_way(&mut self, way: vadeen_osm::Way) -> u64 {
+    pub fn add_way(&mut self, way: vadeen_osm::Way) -> bool {
         let mut osm = Osm::default();
         let id = way.id;
         osm.add_way(way);
-        return self.write("ways", id, &osm);
+        return self.write("ways", id as u64, &osm);
     }
 
-    pub fn add_node(&mut self, node: vadeen_osm::Node) -> u64 {
+    pub fn add_node(&mut self, node: vadeen_osm::Node) -> bool {
         let mut osm = Osm::default();
         let id = node.id;
         osm.add_node(node);
-        return self.write("nodes", id, &osm);
+        return self.write("nodes", id as u64, &osm);
     }
 }
 

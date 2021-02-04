@@ -21,8 +21,7 @@ impl Reader {
     ) -> std::iter::Map<DirEntryIter<((), ())>, fn(Result<DirEntry<((), ())>, Error>) -> Osm> {
         let mut nodes = PathBuf::new();
         nodes.push(&self.output);
-        println!("nodes {:?}", nodes.to_str());
-        fn convert(entry: Result<DirEntry<((), ())>, Error>) -> Osm {
+        fn convert_to_osm(entry: Result<DirEntry<((), ())>, Error>) -> Osm {
             let buf = entry.unwrap().path();
             let filepath = buf.to_str().unwrap();
 
