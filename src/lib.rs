@@ -10,6 +10,7 @@ mod tags;
 
 use eyros::{Mix, Mix2, Row, DB};
 use georender_pack::encode;
+use osm_is_area;
 use osmpbf::{Element, ElementReader};
 use std::collections::HashMap;
 use std::iter::Iterator;
@@ -23,29 +24,104 @@ type P = Mix2<f64, f64>;
 type V = Vec<u8>;
 type E = Box<dyn std::error::Error + Sync + Send + 'static>;
 
+struct PointDependencies {
+    values: HashMap<i64, (f64, f64)>,
+    reader: Reader,
+    xmin: f64,
+    ymin: f64,
+    xmax: f64,
+    ymax: f64,
+}
+
+impl PointDependencies {
+    pub fn new<'a>(output: &str) -> PointDependencies {
+        return PointDependencies {
+            values: HashMap::new(),
+            reader: Reader::new(output),
+            xmin: 0.0,
+            ymin: 0.0,
+            xmax: 0.0,
+            ymax: 0.0,
+        };
+    }
+
+    pub fn insert(&mut self, id: i64) {
+        match self.reader.read_node(id as u64) {
+            Some(node) => {
+                let point = (node.coordinate.lon(), node.coordinate.lat());
+                self.xmin = point.0.min(self.xmin);
+                self.ymin = point.1.min(self.ymin);
+                self.xmax = point.0.max(self.xmax);
+                self.ymax = point.1.max(self.ymax);
+                self.values.insert(id, point);
+            }
+            None => {
+                println!("Failed to read node with id {}", id);
+            }
+        }
+    }
+
+    pub fn insert_way(&mut self, id: i64) {
+        match self.reader.read_way(id as u64) {
+            Some(way) => {
+                for id in way.refs {
+                    self.insert(id);
+                }
+            }
+            None => {
+                println!("Failed to read node with id {}", id);
+            }
+        }
+    }
+}
+
 pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let reader = Reader::new(output);
     let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
 
+    let mut deps = PointDependencies::new(output);
+
     for osm in reader.walk() {
         if osm.relations.len() > 0 {
-            // osm.relations should only have 1 item
-            let relation = osm.relations[0].clone();
-            let id = relation.id as u64;
-            let members = relation.members.clone();
+            let rel = osm.relations[0].clone();
+            let id = rel.id as u64;
+            let members = rel.members.clone();
+            let mut member_ids: Vec<i64> = Vec::with_capacity(members.len());
+
             for member in members {
+                let id = member.ref_id();
+                member_ids.push(id);
+
                 match member.role() {
-                    "node" => {
-                        let node = reader.read_node(id as u64);
-                    }
-                    "way" => {
-                        let way = reader.read_way(id as u64);
-                    }
+                    "node" => deps.insert(id),
+                    "way" => deps.insert_way(id),
                     "relation" => {
-                        let relation = reader.read_relation(id as u64);
+                        // TODO: relation within a relation???
                     }
                     _ => {}
                 }
+            }
+
+            let tags = rel
+                .meta
+                .tags
+                .iter()
+                .map(|t| (t.key.as_ref(), t.value.as_ref()))
+                .collect();
+
+            if osm_is_area::relation(&tags, &member_ids) {
+                let value = encode::way(id, tags, member_ids, &deps.values)?;
+                let mut batch = Vec::new();
+                let row = Row::Insert(
+                    Mix2::new(
+                        Mix::Interval(deps.xmin, deps.xmax),
+                        Mix::Interval(deps.ymin, deps.ymax),
+                    ),
+                    value,
+                );
+                batch.push(row);
+
+                db.batch(&batch.as_slice()).await?;
             }
         }
 
@@ -54,25 +130,8 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
             let way = osm.ways[0].clone();
             let id = way.id as u64;
             let refs = way.refs.clone();
-            let mut deps = HashMap::new();
-            let mut xmin = 0.0;
-            let mut xmax = 0.0;
-            let mut ymin = 0.0;
-            let mut ymax = 0.0;
-            for node_id in way.refs {
-                match reader.read_node(node_id as u64) {
-                    Some(node) => {
-                        let point = (node.coordinate.lon(), node.coordinate.lat());
-                        xmin = point.0;
-                        ymin = point.1;
-                        xmax = point.0;
-                        ymax = point.1;
-                        deps.insert(node_id, point);
-                    }
-                    None => {
-                        println!("Failed to read node with id {}", node_id);
-                    }
-                }
+            for id in way.refs {
+                deps.insert(id);
             }
 
             let tags = way
@@ -82,10 +141,13 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
                 .map(|t| (t.key.as_ref(), t.value.as_ref()))
                 .collect();
 
-            let value = encode::way(id, tags, refs, &deps)?;
+            let value = encode::way(id, tags, refs, &deps.values)?;
             let mut batch = Vec::new();
             let row = Row::Insert(
-                Mix2::new(Mix::Interval(xmin, xmax), Mix::Interval(ymin, ymax)),
+                Mix2::new(
+                    Mix::Interval(deps.xmin, deps.xmax),
+                    Mix::Interval(deps.ymin, deps.ymax),
+                ),
                 value,
             );
             batch.push(row);

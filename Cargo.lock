@@ -1028,6 +1028,7 @@ dependencies = [
  "hex",
  "jwalk",
  "lru 0.6.1",
+ "osm-is-area",
  "osmpbf",
  "rand",
  "vadeen_osm",
