@@ -16,9 +16,10 @@ hex = "0.4.2"
 lru = "0.6.1"
 criterion = "0.3"
 rand = "0.8.1"
-eyros = "3.0.0"
+eyros = "4.0.0"
 jwalk = "0.6.0"
-georender-pack = "1.0.0"
+# georender-pack = "1.0.0"
+georender-pack = { path = "../georender-pack.rs" }
 async-std = "1.8.0"
 osm-is-area = "0.1.3"
 

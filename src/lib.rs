@@ -8,7 +8,7 @@ pub use reader::*;
 
 mod tags;
 
-use eyros::{Mix, Mix2, Row, DB};
+use eyros::{Coord, Row, DB};
 use georender_pack::encode;
 use osm_is_area;
 use osmpbf::{Element, ElementReader};
@@ -20,7 +20,7 @@ use std::vec::Vec;
 use vadeen_osm::osm_io::error::Error;
 use vadeen_osm::{geo::Coordinate, Node, Relation, Way};
 
-type P = Mix2<f64, f64>;
+type P = (Coord<f64>, Coord<f64>);
 type V = Vec<u8>;
 type E = Box<dyn std::error::Error + Sync + Send + 'static>;
 
@@ -77,7 +77,7 @@ impl PointDependencies {
 
 pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
     let reader = Reader::new(output);
-    let mut db: DB<_, P, V> = DB::open_from_path(&PathBuf::from(db)).await?;
+    let mut db: DB<_,_,P,V> = eyros::open_from_path2(&PathBuf::from(db)).await?;
 
     let mut deps = PointDependencies::new(output);
 
@@ -110,12 +110,12 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
                 .collect();
 
             if osm_is_area::relation(&tags, &member_ids) {
-                let value = encode::way(id, tags, member_ids, &deps.values)?;
+                let value = encode::way(id, &tags, &member_ids, &deps.values)?;
                 let mut batch = Vec::new();
                 let row = Row::Insert(
-                    Mix2::new(
-                        Mix::Interval(deps.xmin, deps.xmax),
-                        Mix::Interval(deps.ymin, deps.ymax),
+                    (
+                        Coord::Interval(deps.xmin, deps.xmax),
+                        Coord::Interval(deps.ymin, deps.ymax),
                     ),
                     value,
                 );
@@ -141,12 +141,12 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
                 .map(|t| (t.key.as_ref(), t.value.as_ref()))
                 .collect();
 
-            let value = encode::way(id, tags, refs, &deps.values)?;
+            let value = encode::way(id, &tags, &refs, &deps.values)?;
             let mut batch = Vec::new();
             let row = Row::Insert(
-                Mix2::new(
-                    Mix::Interval(deps.xmin, deps.xmax),
-                    Mix::Interval(deps.ymin, deps.ymax),
+                (
+                    Coord::Interval(deps.xmin, deps.xmax),
+                    Coord::Interval(deps.ymin, deps.ymax),
                 ),
                 value,
             );
@@ -165,10 +165,10 @@ pub async fn write_to_db(output: &str, db: &str) -> Result<(), E> {
                 .tags
                 .iter()
                 .map(|t| (t.key.as_ref(), t.value.as_ref()))
-                .collect();
+                .collect::<Vec<_>>();
 
-            let value = encode::node(id, point, tags)?;
-            let row = Row::Insert(Mix2::new(Mix::Scalar(point.0), Mix::Scalar(point.1)), value);
+            let value = encode::node(id, point, &tags)?;
+            let row = Row::Insert((Coord::Scalar(point.0), Coord::Scalar(point.1)), value);
 
             let mut batch = Vec::new();
             batch.push(row);
