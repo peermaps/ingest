@@ -10,17 +10,11 @@ documentation = "https://docs.rs/ingest"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-vadeen_osm = "0.4.1"
-osmpbf = "0.2.2"
-hex = "0.4.2"
-lru = "0.6.1"
-criterion = "0.3"
-rand = "0.8.1"
 eyros = "4.0.0"
-jwalk = "0.6.0"
-
-georender-pack = "2.0.0"
+#georender-pack = "2.0.0"
+georender-pack = { path = "../georender-pack.rs" }
 desert = "1.0.3"
+#osmpbf = "0.2.4"
 osmpbf = "0.2.4"
 async-trait = "0.1.48"
 async-std = "1.9.0"

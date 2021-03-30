@@ -2,6 +2,7 @@ use desert::{ToBytesBE,FromBytesBE};
 use crate::varint;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
+pub const ID_PREFIX: u8 = 0;
 
 #[derive(Debug,Clone,PartialEq)]
 pub enum Decoded {
@@ -46,8 +47,9 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
     osmpbf::Element::Way(way) => (way.id() as u64)*3+1,
     osmpbf::Element::Relation(relation) => (relation.id() as u64)*3+2,
   };
-  let mut id_bytes = vec![0u8;varint::length(ex_id)];
-  varint::encode(ex_id, &mut id_bytes)?;
+  let mut id_bytes = vec![0u8;1+varint::length(ex_id)];
+  id_bytes[0] = ID_PREFIX;
+  varint::encode(ex_id, &mut id_bytes[1..])?;
   match element {
     osmpbf::Element::Node(node) => {
       let mut buf = vec![0u8;4+4+varint::length(ft)+labels.len()];
@@ -108,7 +110,10 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
 }
 
 pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
-  let (_,ex_id) = varint::decode(key)?;
+  if key[0] != ID_PREFIX {
+    return Err(Box::new(failure::err_msg("attempted to decode a non-ID key").compat()));
+  }
+  let (_,ex_id) = varint::decode(&key[1..])?;
   let id = ex_id/3;
   Ok(match ex_id%3 {
     0 => {
