@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <relation id="700">
+    <member type="way" role="outer" ref="701" />
+    <member type="way" role="inner" ref="702" />
+    <member type="way" role="outer" ref="703" />
+    <tag k="natural" v="water" />
+    <tag k="name" v="lake whatever" />
+    <tag k="name:x" v="..." />
+  </way>
+</osm>
