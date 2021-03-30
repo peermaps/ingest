@@ -1,9 +1,16 @@
-use peermaps_ingest::{encode,ID_PREFIX};
+use peermaps_ingest::{encode,decode,ID_PREFIX,varint,
+  Decoded,DecodedNode,DecodedWay,DecodedRelation};
 use leveldb::database::{Database,batch::{Batch,Writebatch}};
 use leveldb::options::{Options,WriteOptions,ReadOptions};
 use leveldb::iterator::{LevelDBIterator,Iterable};
+use leveldb::kv::KV;
+use std::collections::HashMap;
+use async_std::sync::Arc;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
+type NodeDeps = HashMap<u64,(f32,f32)>;
+type WayDeps = HashMap<u64,Vec<u64>>;
+type LDB = Arc<Database<Key>>;
 
 struct Key { pub data: Vec<u8> }
 impl Key { fn from(key: Vec<u8>) -> Self { Key { data: key } } }
@@ -19,18 +26,18 @@ async fn main() -> Result<(),Error> {
   if cmd == "ingest" {
     let pbf_file = &args[2];
     let db_dir = &args[3];
-    let mut db = open(std::path::Path::new(&db_dir))?;
-    phase0(&mut db, pbf_file)?;
-    phase1(&mut db)?;
+    let db = Arc::new(open(std::path::Path::new(&db_dir))?);
+    phase0(db.clone(), pbf_file)?;
+    phase1(db)?;
   } else if cmd == "phase0" {
     let pbf_file = &args[2];
     let db_dir = &args[3];
-    let mut db = open(std::path::Path::new(&db_dir))?;
-    phase0(&mut db, pbf_file)?;
+    let db = Arc::new(open(std::path::Path::new(&db_dir))?);
+    phase0(db, pbf_file)?;
   } else if cmd == "phase1" {
     let db_dir = &args[2];
-    let mut db = open(std::path::Path::new(&db_dir))?;
-    phase1(&mut db)?;
+    let db = Arc::new(open(std::path::Path::new(&db_dir))?);
+    phase1(db)?;
   }
   Ok(())
 }
@@ -43,7 +50,7 @@ fn open(path: &std::path::Path) -> Result<Database<Key>,Error> {
 }
 
 // write the pbf into leveldb
-fn phase0(db: &mut Database<Key>, pbf_file: &str) -> Result<(),Error> {
+fn phase0(db: LDB, pbf_file: &str) -> Result<(),Error> {
   let start = std::time::Instant::now();
   let mut batch = Writebatch::new();
   let batch_size = 10_000;
@@ -70,17 +77,76 @@ fn phase0(db: &mut Database<Key>, pbf_file: &str) -> Result<(),Error> {
 
 // loop over the db, denormalize the records, georender-pack the data,
 // store into eyros, and write backrefs into leveldb
-fn phase1(db: &mut Database<Key>) -> Result<(),Error> {
+fn phase1(db: LDB) -> Result<(),Error> {
   let start = std::time::Instant::now();
   let gt = Key::from(vec![ID_PREFIX]);
   let lt = Key::from(vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
   let mut iter = db.iter(ReadOptions::new()).from(&gt).to(&lt);
   let mut count = 0;
   while let Some((key,value)) = iter.next() {
-    //eprintln!["{:?} => {:?}", &key.data, &value];
+    match decode(&key.data,&value)? {
+      Decoded::Node(_node) => {
+        // ...
+      },
+      Decoded::Way(way) => {
+        let mut deps = HashMap::with_capacity(way.refs.len());
+        get_way_deps(db.clone(), &way, &mut deps)?;
+        //eprintln!["{} deps={:?}", way.id, &deps];
+        /*
+        georender_pack::encode::way_from_feature_type(
+          way.id, way.feature_type, way.is_area, &way.refs, &deps
+        )
+        */
+      },
+      Decoded::Relation(relation) => {
+        let mut node_deps = HashMap::new();
+        let mut way_deps = HashMap::with_capacity(relation.members.len());
+        get_relation_deps(db.clone(), &relation, &mut node_deps, &mut way_deps)?;
+        //eprintln!["{} node_deps={:?} way_deps={:?}", relation.id, &node_deps, &way_deps];
+      },
+    }
     count += 1;
   }
   eprintln!["phase 1: processed and stored {} records in {} seconds",
     count, start.elapsed().as_secs_f64()];
+  Ok(())
+}
+
+fn get_way_deps(db: LDB, way: &DecodedWay, deps: &mut NodeDeps) -> Result<(),Error> {
+  let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
+  key_data[0] = ID_PREFIX;
+  for r in way.refs.iter() {
+    let s = varint::encode(r*3+0,&mut key_data[1..])?;
+    let key = Key::from(key_data[0..1+s].to_vec());
+    if let Some(buf) = db.get(ReadOptions::new(), &key)? {
+      match decode(&key.data,&buf)? {
+        Decoded::Node(node) => {
+          deps.insert(*r,(node.lon,node.lat));
+        },
+        _ => {},
+      }
+    }
+  }
+  Ok(())
+}
+
+fn get_relation_deps(db: LDB, relation: &DecodedRelation,
+  node_deps: &mut NodeDeps, way_deps: &mut WayDeps
+) -> Result<(),Error> {
+  let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
+  key_data[0] = ID_PREFIX;
+  for m in relation.members.iter() {
+    let s = varint::encode((m/2)*3+1,&mut key_data[1..])?;
+    let key = Key::from(key_data[0..1+s].to_vec());
+    if let Some(buf) = db.get(ReadOptions::new(), &key)? {
+      match decode(&key.data,&buf)? {
+        Decoded::Way(way) => {
+          way_deps.insert(way.id, way.refs.clone());
+          get_way_deps(db.clone(), &way, node_deps)?;
+        },
+        _ => {},
+      }
+    }
+  }
   Ok(())
 }

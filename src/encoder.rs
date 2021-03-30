@@ -22,6 +22,7 @@ pub struct DecodedNode {
 pub struct DecodedWay {
   pub id: u64,
   pub feature_type: u64,
+  pub is_area: bool,
   pub refs: Vec<u64>,
   pub labels: Vec<u8>,
 }
@@ -29,6 +30,7 @@ pub struct DecodedWay {
 pub struct DecodedRelation {
   pub id: u64,
   pub feature_type: u64,
+  pub is_area: bool,
   pub members: Vec<u64>, // id*2 + (1 for inner, 0 for outer)
   pub labels: Vec<u8>,
 }
@@ -44,8 +46,14 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
   let ex_id = match element {
     osmpbf::Element::Node(node) => (node.id() as u64)*3+0,
     osmpbf::Element::DenseNode(node) => (node.id() as u64)*3+0,
-    osmpbf::Element::Way(way) => (way.id() as u64)*3+1,
-    osmpbf::Element::Relation(relation) => (relation.id() as u64)*3+2,
+    osmpbf::Element::Way(way) => {
+      let is_area = osm_is_area::way(&way.tags().collect(), &way.refs().collect()) as u64;
+      ((way.id() as u64)*2+is_area)*3+1
+    },
+    osmpbf::Element::Relation(relation) => {
+      let is_area = osm_is_area::relation(&relation.tags().collect(), &vec![1]) as u64;
+      ((relation.id() as u64)*2+is_area)*3+2
+    },
   };
   let mut id_bytes = vec![0u8;1+varint::length(ex_id)];
   id_bytes[0] = ID_PREFIX;
@@ -114,9 +122,9 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
     return Err(Box::new(failure::err_msg("attempted to decode a non-ID key").compat()));
   }
   let (_,ex_id) = varint::decode(&key[1..])?;
-  let id = ex_id/3;
   Ok(match ex_id%3 {
     0 => {
+      let id = ex_id/3;
       let mut offset = 0;
       let (s,lon) = f32::from_bytes_be(&value[offset..])?;
       offset += s;
@@ -128,6 +136,8 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
       Decoded::Node(DecodedNode { id, lon, lat, feature_type, labels })
     },
     1 => {
+      let id = ex_id/6;
+      let is_area = match (ex_id/3)%2 { 0 => false, _ => true };
       let mut offset = 0;
       let (s,feature_type) = varint::decode(&value[offset..])?;
       offset += s;
@@ -140,9 +150,11 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
         refs.push(r);
       }
       let labels = value[offset..].into();
-      Decoded::Way(DecodedWay { id, refs, feature_type, labels })
+      Decoded::Way(DecodedWay { id, feature_type, is_area, refs, labels })
     },
     _ => {
+      let id = ex_id/6;
+      let is_area = match (ex_id/3)%2 { 0 => false, _ => true };
       let mut offset = 0;
       let (s,feature_type) = varint::decode(&value[offset..])?;
       offset += s;
@@ -155,7 +167,7 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
         members.push(m);
       }
       let labels = value[offset..].into();
-      Decoded::Relation(DecodedRelation { id, feature_type, members, labels })
+      Decoded::Relation(DecodedRelation { id, feature_type, is_area, members, labels })
     },
   })
 }

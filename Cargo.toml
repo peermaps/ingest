@@ -14,7 +14,6 @@ eyros = "4.0.0"
 #georender-pack = "2.0.0"
 georender-pack = { path = "../georender-pack.rs" }
 desert = "1.0.3"
-#osmpbf = "0.2.4"
 osmpbf = "0.2.4"
 async-trait = "0.1.48"
 async-std = "1.9.0"
@@ -22,6 +21,7 @@ leveldb = "0.8.6"
 failure = "0.1.8"
 db-key = "0.0.5"
 leveldb-sys = "2.0.8"
+osm-is-area = "0.1.4"
 
 [[bench]]
 name = "large_area"
