@@ -46,15 +46,10 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
   let ex_id = match element {
     osmpbf::Element::Node(node) => (node.id() as u64)*3+0,
     osmpbf::Element::DenseNode(node) => (node.id() as u64)*3+0,
-    osmpbf::Element::Way(way) => {
-      let is_area = osm_is_area::way(&way.tags().collect(), &way.refs().collect()) as u64;
-      ((way.id() as u64)*2+is_area)*3+1
-    },
-    osmpbf::Element::Relation(relation) => {
-      let is_area = osm_is_area::relation(&relation.tags().collect(), &vec![1]) as u64;
-      ((relation.id() as u64)*2+is_area)*3+2
-    },
+    osmpbf::Element::Way(way) => (way.id() as u64)*3+1,
+    osmpbf::Element::Relation(relation) => (relation.id() as u64)*3+2,
   };
+
   let mut id_bytes = vec![0u8;1+varint::length(ex_id)];
   id_bytes[0] = ID_PREFIX;
   varint::encode(ex_id, &mut id_bytes[1..])?;
@@ -83,7 +78,9 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
         + refs.iter().fold(0usize,|sum,r| sum + varint::length(*r as u64));
       let mut buf = vec![0u8;varint::length(ft)+rsize+labels.len()];
       let mut offset = 0;
-      offset += varint::encode(ft, &mut buf[offset..])?;
+      let mut is_area = osm_is_area::way(&way.tags().collect(), &way.refs().collect()) as u64;
+      if refs.len() < 3 { is_area = 0 }
+      offset += varint::encode(ft*2+is_area, &mut buf[offset..])?;
       offset += varint::encode(refs.len() as u64, &mut buf[offset..])?;
       for r in refs.iter() {
         offset += varint::encode(*r as u64, &mut buf[offset..])?;
@@ -106,7 +103,9 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
         + members.iter().fold(0usize,|sum,m| sum + varint::length(*m));
       let mut buf = vec![0u8;varint::length(ft)+msize+labels.len()];
       let mut offset = 0;
-      offset += varint::encode(ft, &mut buf[offset..])?;
+      let mut is_area = osm_is_area::relation(&relation.tags().collect(), &vec![1]) as u64;
+      if members.len() < 3 { is_area = 0 }
+      offset += varint::encode(ft*2+is_area, &mut buf[offset..])?;
       offset += varint::encode(members.len() as u64, &mut buf[offset..])?;
       for m in members.iter() {
         offset += varint::encode(*m as u64, &mut buf[offset..])?;
@@ -122,9 +121,9 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
     return Err(Box::new(failure::err_msg("attempted to decode a non-ID key").compat()));
   }
   let (_,ex_id) = varint::decode(&key[1..])?;
+  let id = ex_id/3;
   Ok(match ex_id%3 {
     0 => {
-      let id = ex_id/3;
       let mut offset = 0;
       let (s,lon) = f32::from_bytes_be(&value[offset..])?;
       offset += s;
@@ -136,11 +135,11 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
       Decoded::Node(DecodedNode { id, lon, lat, feature_type, labels })
     },
     1 => {
-      let id = ex_id/6;
-      let is_area = match (ex_id/3)%2 { 0 => false, _ => true };
       let mut offset = 0;
-      let (s,feature_type) = varint::decode(&value[offset..])?;
+      let (s,fta) = varint::decode(&value[offset..])?;
       offset += s;
+      let feature_type = fta/2;
+      let is_area = match fta%2 { 0 => false, _ => true };
       let (s,rlen) = varint::decode(&value[offset..])?;
       offset += s;
       let mut refs = Vec::with_capacity(rlen as usize);
@@ -153,11 +152,12 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
       Decoded::Way(DecodedWay { id, feature_type, is_area, refs, labels })
     },
     _ => {
-      let id = ex_id/6;
       let is_area = match (ex_id/3)%2 { 0 => false, _ => true };
       let mut offset = 0;
-      let (s,feature_type) = varint::decode(&value[offset..])?;
+      let (s,fta) = varint::decode(&value[offset..])?;
       offset += s;
+      let feature_type = fta/2;
+      let is_area = match fta%2 { 0 => false, _ => true };
       let (s,mlen) = varint::decode(&value[offset..])?;
       offset += s;
       let mut members = Vec::with_capacity(mlen as usize);
