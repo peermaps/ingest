@@ -91,18 +91,30 @@ fn phase1(db: LDB) -> Result<(),Error> {
       Decoded::Way(way) => {
         let mut deps = HashMap::with_capacity(way.refs.len());
         get_way_deps(db.clone(), &way, &mut deps)?;
-        //eprintln!["{} deps={:?}", way.id, &deps];
-        /*
-        georender_pack::encode::way_from_feature_type(
-          way.id, way.feature_type, way.is_area, &way.refs, &deps
-        )
-        */
+        let encoded = georender_pack::encode::way_from_parsed(
+          way.id, way.feature_type, way.is_area, &way.labels, &way.refs, &deps
+        )?;
+        //eprintln!["way {:?}", encoded];
       },
       Decoded::Relation(relation) => {
         let mut node_deps = HashMap::new();
         let mut way_deps = HashMap::with_capacity(relation.members.len());
         get_relation_deps(db.clone(), &relation, &mut node_deps, &mut way_deps)?;
-        //eprintln!["{} node_deps={:?} way_deps={:?}", relation.id, &node_deps, &way_deps];
+        let members = relation.members.iter().map(|m| {
+          georender_pack::Member::new(
+            m/2,
+            match m%2 {
+              0 => georender_pack::MemberRole::Outer(),
+              _ => georender_pack::MemberRole::Inner(),
+            },
+            georender_pack::MemberType::Way()
+          )
+        }).collect::<Vec<_>>();
+        let encoded = georender_pack::encode::relation_from_parsed(
+          relation.id, relation.feature_type, relation.is_area,
+          &relation.labels, &members, &node_deps, &way_deps
+        )?;
+        eprintln!["relation {:?}", encoded];
       },
     }
     count += 1;

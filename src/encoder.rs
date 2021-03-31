@@ -37,10 +37,10 @@ pub struct DecodedRelation {
 
 pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> {
   let tags = match element {
-    osmpbf::Element::Node(node) => node.tags().collect(),
-    osmpbf::Element::DenseNode(node) => node.tags().collect(),
-    osmpbf::Element::Way(way) => way.tags().collect(),
-    osmpbf::Element::Relation(relation) => relation.tags().collect(),
+    osmpbf::Element::Node(node) => node.tags().collect::<Vec<_>>(),
+    osmpbf::Element::DenseNode(node) => node.tags().collect::<Vec<_>>(),
+    osmpbf::Element::Way(way) => way.tags().collect::<Vec<_>>(),
+    osmpbf::Element::Relation(relation) => relation.tags().collect::<Vec<_>>(),
   };
   let (ft,labels) = georender_pack::tags::parse(&tags)?;
   let ex_id = match element {
