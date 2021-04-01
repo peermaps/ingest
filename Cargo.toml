@@ -22,6 +22,7 @@ failure = "0.1.8"
 db-key = "0.0.5"
 leveldb-sys = "2.0.8"
 osm-is-area = "0.1.4"
+random-access-disk = "2.0.0"
 
 [[bench]]
 name = "large_area"

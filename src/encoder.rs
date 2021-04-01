@@ -152,7 +152,6 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
       Decoded::Way(DecodedWay { id, feature_type, is_area, refs, labels })
     },
     _ => {
-      let is_area = match (ex_id/3)%2 { 0 => false, _ => true };
       let mut offset = 0;
       let (s,fta) = varint::decode(&value[offset..])?;
       offset += s;
