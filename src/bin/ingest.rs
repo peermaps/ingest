@@ -1,4 +1,5 @@
-use peermaps_ingest::{encode,decode,ID_PREFIX,varint,Decoded,DecodedWay,DecodedRelation};
+use peermaps_ingest::{encode,decode,ID_PREFIX,BACKREF_PREFIX,
+  varint,Decoded,DecodedWay,DecodedRelation};
 use leveldb::database::{Database,batch::{Batch,Writebatch}};
 use leveldb::options::{Options,WriteOptions,ReadOptions};
 use leveldb::iterator::{LevelDBIterator,Iterable};
@@ -91,11 +92,14 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
   let lt = Key::from(vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
   let mut iter = ldb.iter(ReadOptions::new()).from(&gt).to(&lt);
   let mut count = 0;
-  let mut batch_count = 0;
+  let mut ebatch_count = 0;
   let place_other = *georender_pack::osm_types::get_types().get("place.other").unwrap();
-  let batch_size = 10_000;
-  let sync_interval = 20;
-  let mut batch = Vec::with_capacity(batch_size);
+  let ebatch_size = 10_000;
+  let esync_interval = 20;
+  let mut ebatch = Vec::with_capacity(ebatch_size);
+  let mut lbatch_count = 0;
+  let lbatch_size = 10_000;
+  let mut lbatch = Writebatch::new();
   while let Some((key,value)) = iter.next() {
     match decode(&key.data,&value)? {
       Decoded::Node(node) => {
@@ -104,21 +108,19 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
           node.id, (node.lon,node.lat), node.feature_type, &node.labels
         )?;
         let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
-        batch.push(eyros::Row::Insert(point, encoded));
+        ebatch.push(eyros::Row::Insert(point, encoded));
       },
       Decoded::Way(way) => {
         let mut deps = HashMap::with_capacity(way.refs.len());
         get_way_deps(ldb.clone(), &way, &mut deps)?;
         let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
         let mut pcount = 0;
-        for r in way.refs.iter() {
-          if let Some((lon,lat)) = deps.get(r) {
-            bbox.0 = bbox.0.min(*lon);
-            bbox.1 = bbox.1.min(*lat);
-            bbox.2 = bbox.2.max(*lon);
-            bbox.3 = bbox.3.max(*lat);
-            pcount += 1;
-          }
+        for (lon,lat) in deps.values() {
+          bbox.0 = bbox.0.min(*lon);
+          bbox.1 = bbox.1.min(*lat);
+          bbox.2 = bbox.2.max(*lon);
+          bbox.3 = bbox.3.max(*lat);
+          pcount += 1;
         }
         if pcount <= 1 { continue }
         let encoded = georender_pack::encode::way_from_parsed(
@@ -128,7 +130,16 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
           eyros::Coord::Interval(bbox.0,bbox.2),
           eyros::Coord::Interval(bbox.1,bbox.3),
         );
-        batch.push(eyros::Row::Insert(point, encoded));
+        ebatch.push(eyros::Row::Insert(point, encoded));
+        for r in deps.keys() {
+          let mut key = vec![0u8;1+varint::length(*r)+varint::length(way.id)];
+          key[0] = BACKREF_PREFIX;
+          // key=PREFIX+NODE_ID+WAY_ID, value=[]
+          let s = varint::encode(*r, &mut key[1..])?;
+          varint::encode(way.id, &mut key[1+s..])?;
+          lbatch.put(Key::from(key), &vec![]);
+          lbatch_count += 1;
+        }
       },
       Decoded::Relation(relation) => {
         let mut node_deps = HashMap::new();
@@ -136,16 +147,14 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
         get_relation_deps(ldb.clone(), &relation, &mut node_deps, &mut way_deps)?;
         let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
         let mut pcount = 0;
-        for m in relation.members.iter() {
-          if let Some(refs) = way_deps.get(&(m/2)) {
-            for r in refs.iter() {
-              if let Some(p) = node_deps.get(r) {
-                bbox.0 = bbox.0.min(p.0);
-                bbox.1 = bbox.1.min(p.1);
-                bbox.2 = bbox.2.max(p.0);
-                bbox.3 = bbox.3.max(p.1);
-                pcount += 1;
-              }
+        for refs in way_deps.values() {
+          for r in refs.iter() {
+            if let Some(p) = node_deps.get(r) {
+              bbox.0 = bbox.0.min(p.0);
+              bbox.1 = bbox.1.min(p.1);
+              bbox.2 = bbox.2.max(p.0);
+              bbox.3 = bbox.3.max(p.1);
+              pcount += 1;
             }
           }
         }
@@ -168,24 +177,43 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
           eyros::Coord::Interval(bbox.0,bbox.2),
           eyros::Coord::Interval(bbox.1,bbox.3),
         );
-        batch.push(eyros::Row::Insert(point, encoded));
+        ebatch.push(eyros::Row::Insert(point, encoded));
+
+        for way_id in way_deps.keys() {
+          let mut key = vec![0u8;1+varint::length(*way_id)+varint::length(relation.id)];
+          key[0] = BACKREF_PREFIX;
+          // key=PREFIX+WAY_ID+RELATION_ID, value=[]
+          let s = varint::encode(*way_id, &mut key[1..])?;
+          varint::encode(relation.id, &mut key[1+s..])?;
+          lbatch.put(Key::from(key), &vec![]);
+          lbatch_count += 1;
+        }
       },
     }
     count += 1;
-    if batch.len() >= batch_size {
-      edb.batch(&batch).await?;
-      batch.clear();
-      batch_count += 1;
-      if batch_count % sync_interval == 0 {
+    if ebatch.len() >= ebatch_size {
+      edb.batch(&ebatch).await?;
+      ebatch.clear();
+      ebatch_count += 1;
+      if ebatch_count % esync_interval == 0 {
         edb.sync().await?;
       }
     }
+    if lbatch_count >= lbatch_size {
+      ldb.write(WriteOptions::new(), &lbatch)?;
+      lbatch.clear();
+      lbatch_count = 0;
+    }
   }
-  if batch.len() == 0 {
-    edb.batch(&batch).await?;
-    batch.clear();
+  if ebatch.len() > 0 {
+    edb.batch(&ebatch).await?;
+    ebatch.clear();
   }
   edb.sync().await?;
+  if lbatch_count > 0 {
+    ldb.write(WriteOptions::new(), &lbatch)?;
+    lbatch.clear();
+  }
   eprintln!["phase 1: processed and stored {} records in {} seconds",
     count, start.elapsed().as_secs_f64()];
   Ok(())
