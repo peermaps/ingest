@@ -76,11 +76,11 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
       let refs: Vec<i64> = way.refs().into_iter().collect();
       let rsize = varint::length(refs.len() as u64)
         + refs.iter().fold(0usize,|sum,r| sum + varint::length(*r as u64));
-      let mut buf = vec![0u8;varint::length(ft)+rsize+labels.len()];
+      let is_area = osm_is_area::way(&way.tags().collect(), &way.refs().collect()) as u64;
+      let fta = ft*2+is_area;
+      let mut buf = vec![0u8;varint::length(fta)+rsize+labels.len()];
       let mut offset = 0;
-      let mut is_area = osm_is_area::way(&way.tags().collect(), &way.refs().collect()) as u64;
-      if refs.len() < 3 { is_area = 0 }
-      offset += varint::encode(ft*2+is_area, &mut buf[offset..])?;
+      offset += varint::encode(fta, &mut buf[offset..])?;
       offset += varint::encode(refs.len() as u64, &mut buf[offset..])?;
       for r in refs.iter() {
         offset += varint::encode(*r as u64, &mut buf[offset..])?;
@@ -101,11 +101,11 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
         .collect();
       let msize = varint::length(members.len() as u64)
         + members.iter().fold(0usize,|sum,m| sum + varint::length(*m));
-      let mut buf = vec![0u8;varint::length(ft)+msize+labels.len()];
+      let is_area = osm_is_area::relation(&relation.tags().collect(), &vec![1]) as u64;
+      let fta = ft*2+is_area;
+      let mut buf = vec![0u8;varint::length(fta)+msize+labels.len()];
       let mut offset = 0;
-      let mut is_area = osm_is_area::relation(&relation.tags().collect(), &vec![1]) as u64;
-      if members.len() < 3 { is_area = 0 }
-      offset += varint::encode(ft*2+is_area, &mut buf[offset..])?;
+      offset += varint::encode(fta, &mut buf[offset..])?;
       offset += varint::encode(members.len() as u64, &mut buf[offset..])?;
       for m in members.iter() {
         offset += varint::encode(*m as u64, &mut buf[offset..])?;
