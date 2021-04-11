@@ -35,7 +35,7 @@ pub struct DecodedRelation {
   pub labels: Vec<u8>,
 }
 
-pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> {
+pub fn encode_osmpbf<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> {
   let tags = match element {
     osmpbf::Element::Node(node) => node.tags().collect::<Vec<_>>(),
     osmpbf::Element::DenseNode(node) => node.tags().collect::<Vec<_>>(),
@@ -50,9 +50,7 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
     osmpbf::Element::Relation(relation) => (relation.id() as u64)*3+2,
   };
 
-  let mut id_bytes = vec![0u8;1+varint::length(ex_id)];
-  id_bytes[0] = ID_PREFIX;
-  varint::encode(ex_id, &mut id_bytes[1..])?;
+  let id_bytes = id_key(ex_id)?;
   match element {
     osmpbf::Element::Node(node) => {
       let mut buf = vec![0u8;4+4+varint::length(ft)+labels.len()];
@@ -116,6 +114,23 @@ pub fn encode<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> 
   }
 }
 
+pub fn encode_o5m<'a>(dataset: &o5m_stream::Dataset) -> Result<Option<(Vec<u8>,Vec<u8>)>,Error> {
+  let (ex_id,tags) = match dataset {
+    o5m_stream::Dataset::Node(node) => {
+      (node.id*3+0,&node.tags)
+    },
+    o5m_stream::Dataset::Way(way) => {
+      (way.id*3+1,&way.tags)
+    },
+    o5m_stream::Dataset::Relation(relation) => {
+      (relation.id*3+2,&relation.tags)
+    },
+    _ => { return Ok(None) },
+  };
+  eprintln!["ex_id={}, tags={:?}",ex_id,tags];
+  Ok(Some((vec![],vec![])))
+}
+
 pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
   if key[0] != ID_PREFIX {
     return Err(Box::new(failure::err_msg("attempted to decode a non-ID key").compat()));
@@ -169,4 +184,11 @@ pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
       Decoded::Relation(DecodedRelation { id, feature_type, is_area, members, labels })
     },
   })
+}
+
+pub fn id_key(ex_id: u64) -> Result<Vec<u8>,Error> {
+  let mut id_bytes = vec![0u8;1+varint::length(ex_id)];
+  id_bytes[0] = ID_PREFIX;
+  varint::encode(ex_id, &mut id_bytes[1..])?;
+  Ok(id_bytes)
 }

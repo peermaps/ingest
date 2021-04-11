@@ -1,11 +1,11 @@
-use peermaps_ingest::{encode,decode,ID_PREFIX,BACKREF_PREFIX,
+use peermaps_ingest::{encode_osmpbf,encode_o5m,decode,id_key,ID_PREFIX,BACKREF_PREFIX,
   varint,Decoded,DecodedWay,DecodedRelation};
 use leveldb::database::{Database,batch::{Batch,Writebatch}};
 use leveldb::options::{Options,WriteOptions,ReadOptions};
 use leveldb::iterator::{LevelDBIterator,Iterable};
 use leveldb::kv::KV;
 use std::collections::HashMap;
-use async_std::sync::Arc;
+use async_std::{prelude::*,sync::Arc,io,fs::File};
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 type NodeDeps = HashMap<u64,(f32,f32)>;
@@ -17,6 +17,7 @@ type V = Vec<u8>;
 type T = eyros::Tree2<f32,f32,V>;
 type EDB = eyros::DB<S,T,P,V>;
 
+#[derive(Clone)]
 struct Key { pub data: Vec<u8> }
 impl Key { fn from(key: Vec<u8>) -> Self { Key { data: key } } }
 impl db_key::Key for Key {
@@ -47,6 +48,13 @@ async fn main() -> Result<(),Error> {
     let ldb = Arc::new(open(std::path::Path::new(&ldb_dir))?);
     let mut edb = eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?;
     phase1(ldb, &mut edb).await?;
+  } else if cmd == "changeset" {
+    let o5c_file = &args[2];
+    let ldb_dir = &args[3];
+    let edb_dir = &args[4];
+    let ldb = Arc::new(open(std::path::Path::new(&ldb_dir))?);
+    let mut edb = eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?;
+    changeset(ldb, &mut edb, o5c_file).await?;
   }
   Ok(())
 }
@@ -66,7 +74,7 @@ fn phase0(db: LDB, pbf_file: &str) -> Result<(),Error> {
   let mut n = 0;
   let mut write_count = 0;
   osmpbf::ElementReader::from_path(pbf_file)?.for_each(|element| {
-    let (key,value) = encode(&element).unwrap();
+    let (key,value) = encode_osmpbf(&element).unwrap();
     batch.put(Key::from(key), &value);
     n += 1;
     write_count += 1;
@@ -80,7 +88,8 @@ fn phase0(db: LDB, pbf_file: &str) -> Result<(),Error> {
     db.write(WriteOptions::new(), &batch)?;
     batch.clear();
   }
-  eprintln!["phase 0: wrote {} records in {} seconds", n, start.elapsed().as_secs_f64()];
+  eprintln!["phase 0: wrote {} records in {} seconds",
+    write_count, start.elapsed().as_secs_f64()];
   Ok(())
 }
 
@@ -132,12 +141,8 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
         );
         ebatch.push(eyros::Row::Insert(point, encoded));
         for r in deps.keys() {
-          let mut key = vec![0u8;1+varint::length(*r)+varint::length(way.id)];
-          key[0] = BACKREF_PREFIX;
-          // key=PREFIX+NODE_ID+WAY_ID, value=[]
-          let s = varint::encode(*r, &mut key[1..])?;
-          varint::encode(way.id, &mut key[1+s..])?;
-          lbatch.put(Key::from(key), &vec![]);
+          // node -> way backref
+          lbatch.put(Key::from(backref_key(*r*3+0, way.id*3+1)?), &vec![]);
           lbatch_count += 1;
         }
       },
@@ -180,12 +185,8 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
         ebatch.push(eyros::Row::Insert(point, encoded));
 
         for way_id in way_deps.keys() {
-          let mut key = vec![0u8;1+varint::length(*way_id)+varint::length(relation.id)];
-          key[0] = BACKREF_PREFIX;
-          // key=PREFIX+WAY_ID+RELATION_ID, value=[]
-          let s = varint::encode(*way_id, &mut key[1..])?;
-          varint::encode(relation.id, &mut key[1+s..])?;
-          lbatch.put(Key::from(key), &vec![]);
+          // way -> relation backref
+          lbatch.put(Key::from(backref_key(way_id*3+1,relation.id*3+2)?), &vec![]);
           lbatch_count += 1;
         }
       },
@@ -216,6 +217,66 @@ async fn phase1(ldb: LDB, edb: &mut EDB) -> Result<(),Error> {
   }
   eprintln!["phase 1: processed and stored {} records in {} seconds",
     count, start.elapsed().as_secs_f64()];
+  Ok(())
+}
+
+// import changes from an o5c changeset file
+async fn changeset(ldb: LDB, edb: &mut EDB, o5c_file: &str) -> Result<(),Error> {
+  type R = Box<dyn io::Read+Unpin>;
+  let infile: R = match &o5c_file {
+    &"-" => Box::new(io::stdin()),
+    x => Box::new(File::open(x).await?),
+  };
+  let mut stream = o5m_stream::decode(infile);
+  while let Some(result) = stream.next().await {
+    let dataset = result?;
+    let m = match dataset {
+      o5m_stream::Dataset::Node(node) => {
+        match &node.data {
+          Some(data) => { // modify or create
+            let pt = (
+              eyros::Coord::Scalar(data.get_longitude()),
+              eyros::Coord::Scalar(data.get_latitude())
+            );
+            Some((false,pt,node.id*3+0))
+          },
+          None => { // delete
+            let key = Key::from(id_key(node.id*3+0)?);
+            match ldb.get(ReadOptions::new(), key.clone())? {
+              Some(buf) => {
+                if let Decoded::Node(decoded) = decode(&key.data,&buf)? {
+                  let pt = (
+                    eyros::Coord::Scalar(decoded.lon),
+                    eyros::Coord::Scalar(decoded.lat),
+                  );
+                  Some((true,pt,node.id*3+0))
+                } else {
+                  return Err(Box::new(failure::err_msg(
+                    "expected node, got unexpected decoded type"
+                  ).compat()));
+                }
+              },
+              None => None,
+            }
+          },
+        }
+      },
+      o5m_stream::Dataset::Way(way) => {
+        unimplemented![]
+      },
+      o5m_stream::Dataset::Relation(relation) => {
+        unimplemented![]
+      },
+      _ => None,
+    };
+    if let Some((is_rm,pt,ex_id)) = m {
+      //println!["{} {:?}", is_rm, pt];
+      let backrefs = get_backrefs(ldb.clone(), ex_id)?;
+      if !is_rm {
+        //let encoded = encode_o5m(dataset);
+      }
+    }
+  }
   Ok(())
 }
 
@@ -257,4 +318,39 @@ fn get_relation_deps(db: LDB, relation: &DecodedRelation,
     }
   }
   Ok(())
+}
+
+fn backref_key(a: u64, b: u64) -> Result<Vec<u8>,Error> {
+  // both a and b are extended ids
+  let mut key = vec![0u8;1+varint::length(a)+varint::length(b)];
+  key[0] = BACKREF_PREFIX;
+  let s = varint::encode(a, &mut key[1..])?;
+  varint::encode(b, &mut key[1+s..])?;
+  Ok(key)
+}
+
+fn get_backrefs(ldb: LDB, ex_id: u64) -> Result<Vec<u64>,Error> {
+  let ex_id_len = varint::length(ex_id);
+  let gt = Key::from({
+    let mut key = vec![0u8;1+ex_id_len];
+    key[0] = BACKREF_PREFIX;
+    varint::encode(ex_id, &mut key[1..])?;
+    key
+  });
+  let lt = Key::from({
+    let mut key = vec![0u8;1+ex_id_len+8];
+    key[0] = BACKREF_PREFIX;
+    let s = varint::encode(ex_id, &mut key[1..])?;
+    for i in 0..8 { key[1+s+i] = 0xff }
+    key
+  });
+  let mut results = vec![];
+  let mut iter = ldb.keys_iter(ReadOptions::new());
+  iter.seek(&gt);
+  while let Some(key) = iter.next() {
+    if key.data > lt.data { break }
+    let (_,r_id) = varint::decode(&key.data[1+ex_id_len..])?;
+    results.push(r_id);
+  }
+  Ok(results)
 }
