@@ -128,6 +128,7 @@ pub fn encode_o5m<'a>(dataset: &o5m_stream::Dataset) -> Result<Option<(Vec<u8>,V
     _ => { return Ok(None) },
   };
   eprintln!["ex_id={}, tags={:?}",ex_id,tags];
+  // TODO
   Ok(Some((vec![],vec![])))
 }
 
