@@ -26,6 +26,7 @@ random-access-disk = "2.0.0"
 o5m-stream = { path = "../o5m-stream.rs" }
 lru = "0.6.5"
 interleaved-ordered = "0.1.1"
+async-recursion = "0.3.2"
 
 [[bench]]
 name = "large_area"

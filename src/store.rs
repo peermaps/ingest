@@ -21,6 +21,11 @@ impl Into<V> for Vec<u8> {
     V { data: self }
   }
 }
+impl Into<Vec<u8>> for V {
+  fn into(self) -> Vec<u8> {
+    self.data
+  }
+}
 impl eyros::Value for V {
   type Id = u64;
   fn get_id(&self) -> Self::Id {
