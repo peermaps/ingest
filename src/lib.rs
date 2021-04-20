@@ -144,6 +144,7 @@ impl Ingest {
           for (r,prev_point) in backrefs.iter().zip(prev_points.iter()) {
             self.recalculate(*r, prev_point).await?;
           }
+          self.estore.lock().await.check_flush().await?;
         }
       }
     }
@@ -176,7 +177,7 @@ impl Ingest {
               let mut lstore = self.lstore.lock().await;
               lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
               let mut estore = self.estore.lock().await;
-              estore.update(prev_point, &new_point, &encoded.into()).await?;
+              estore.push_update(prev_point, &new_point, &encoded.into());
             }
             for (r,p) in backrefs.iter().zip(prev_points.iter()) {
               self.recalculate(*r, p).await?;
@@ -196,7 +197,7 @@ impl Ingest {
               let mut lstore = self.lstore.lock().await;
               lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
               let mut estore = self.estore.lock().await;
-              estore.update(prev_point, &new_point, &encoded.into()).await?;
+              estore.push_update(prev_point, &new_point, &encoded.into());
             }
             for (r,p) in backrefs.iter().zip(prev_points.iter()) {
               self.recalculate(*r, p).await?;

@@ -78,18 +78,23 @@ impl EStore {
     }
     Ok(())
   }
-  pub async fn update(&mut self, prev_point: &P, new_point: &P, value: &V) -> Result<(),Error> {
+  pub fn push_update(&mut self, prev_point: &P, new_point: &P, value: &V) -> () {
     self.batch.extend_from_slice(&[
       eyros::Row::Delete(prev_point.clone(), value.get_id()),
       eyros::Row::Insert(new_point.clone(), value.clone()),
     ]);
-    if self.batch.len() >= self.batch_size {
-      self.flush().await?;
-    }
+  }
+  pub async fn update(&mut self, prev_point: &P, new_point: &P, value: &V) -> Result<(),Error> {
+    self.push_update(prev_point, new_point, value);
+    self.check_flush().await?;
     Ok(())
   }
   pub async fn delete(&mut self, point: P, id: <V as Value>::Id) -> Result<(),Error> {
     self.batch.push(eyros::Row::Delete(point,id));
+    self.check_flush();
+    Ok(())
+  }
+  pub async fn check_flush(&mut self) -> Result<(),Error> {
     if self.batch.len() >= self.batch_size {
       self.flush().await?;
     }
