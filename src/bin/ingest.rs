@@ -43,7 +43,7 @@ async fn main() -> Result<(),Error> {
     let o5c_file = &args[2];
     let ldb_dir = &args[3];
     let edb_dir = &args[4];
-    let ingest = Ingest::new(
+    let mut ingest = Ingest::new(
       LStore::new(open(std::path::Path::new(&ldb_dir))?),
       EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?)
     );

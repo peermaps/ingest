@@ -127,13 +127,21 @@ impl db_key::Key for Key {
   fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T { f(&self.data) }
 }
 
+pub enum LWrite {
+  Put((Key,Vec<u8>)),
+  Del(Key)
+}
+pub enum LUpdate {
+  Put(Vec<u8>),
+  Del()
+}
+
 pub struct LStore {
   pub batch_size: usize,
-  pub batch: Writebatch<Key>,
-  pub batch_count: usize,
+  pub batch: Vec<LWrite>,
   pub db: Database<Key>,
   pub cache: lru::LruCache<Key,Vec<u8>>,
-  pub updates: HashMap<Key,Vec<u8>>,
+  pub updates: HashMap<Key,LUpdate>,
   pub count: usize,
 }
 
@@ -141,8 +149,7 @@ impl LStore {
   pub fn new(db: Database<Key>) -> Self {
     Self {
       batch_size: 10_000,
-      batch: Writebatch::new(),
-      batch_count: 0,
+      batch: vec![],
       db,
       cache: lru::LruCache::new(10_000),
       updates: HashMap::new(),
@@ -151,7 +158,8 @@ impl LStore {
   }
   pub fn get(&mut self, key: &Key) -> Result<Option<Vec<u8>>,Error> {
     match self.updates.get(key) {
-      Some(res) => Ok(Some(res.to_vec())),
+      Some(LUpdate::Put(res)) => Ok(Some(res.to_vec())),
+      Some(LUpdate::Del()) => Ok(None),
       None => match self.cache.get(key) {
         Some(buf) => Ok(Some(buf.to_vec())),
         None => {
@@ -165,20 +173,37 @@ impl LStore {
     }
   }
   pub fn put(&mut self, key: Key, value: &[u8]) -> Result<(),Error> {
-    self.batch.put(key.clone(), value.clone());
-    self.batch_count += 1;
-    if self.batch_size > 0 && self.batch_count >= self.batch_size {
+    self.batch.push(LWrite::Put((key.clone(), value.to_vec())));
+    self.cache.pop(&key);
+    if self.batch_size > 0 && self.batch.len() >= self.batch_size {
       self.flush()?;
     } else {
-      self.updates.insert(key, value.to_vec());
+      self.updates.insert(key, LUpdate::Put(value.to_vec()));
+    }
+    self.count += 1;
+    Ok(())
+  }
+  pub fn del(&mut self, key: Key) -> Result<(),Error> {
+    self.batch.push(LWrite::Del(key.clone()));
+    self.cache.pop(&key);
+    if self.batch_size > 0 && self.batch.len() >= self.batch_size {
+      self.flush()?;
+    } else {
+      self.updates.insert(key, LUpdate::Del());
     }
     self.count += 1;
     Ok(())
   }
   pub fn flush(&mut self) -> Result<(),Error> {
-    self.db.write(WriteOptions::new(), &self.batch)?;
+    let mut wbatch = Writebatch::new();
+    for b in self.batch.iter() {
+      match b {
+        LWrite::Put((key,value)) => wbatch.put(key.clone(),value),
+        LWrite::Del(key) => wbatch.delete(key.clone()),
+      }
+    }
+    self.db.write(WriteOptions::new(), &wbatch)?;
     self.batch.clear();
-    self.batch_count = 0;
     Ok(())
   }
   // does not splice records in from self.updated:
@@ -191,10 +216,11 @@ impl LStore {
     let ki = self.db.keys_iter(ReadOptions::new());
     ki.seek(&gt);
     // todo: cache the sorted keys
-    let mut ukeys = self.updates.keys()
-      .skip_while(|k| *k < &gt)
-      .take_while(|k| *k < &lt)
-      .map(|key| key.clone())
+    let mut ukeys = self.updates.iter()
+      .filter(|(_,v)| match v { LUpdate::Put(_) => true, _ => false })
+      .skip_while(|(k,_)| *k < &gt)
+      .take_while(|(k,_)| *k < &lt)
+      .map(|(key,_)| key.clone())
       .collect::<Vec<Key>>();
     ukeys.sort();
     interleaved_ordered::interleave_ordered(

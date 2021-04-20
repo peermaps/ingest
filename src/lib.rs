@@ -4,15 +4,11 @@ pub mod store;
 pub use store::*;
 pub mod varint;
 
-use desert::FromBytesLE;
-
 pub const BACKREF_PREFIX: u8 = 1;
 
-use leveldb::{database::Database,options::Options};
-use leveldb::iterator::{LevelDBIterator,Iterable};
-use leveldb::kv::KV;
 use std::collections::HashMap;
-use async_std::{prelude::*,sync::{Arc,Mutex},io,fs::File};
+use async_std::{prelude::*,sync::{Arc,Mutex},io};
+use desert::FromBytesLE;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 type NodeDeps = HashMap<u64,(f32,f32)>;
@@ -161,7 +157,7 @@ impl Ingest {
 
   // call this when one of a record's dependants changes
   #[async_recursion::async_recursion]
-  async fn recalculate(&mut self, ex_id: u64, prev_point: &P) -> Result<(),Error> {
+  async fn recalculate(&self, ex_id: u64, prev_point: &P) -> Result<(),Error> {
     let key = Key::from(&id_key(ex_id)?);
     let res = self.lstore.lock().await.get(&key)?;
     if let Some(buf) = res {
@@ -212,7 +208,7 @@ impl Ingest {
     Ok(())
   }
 
-  async fn get_point(&mut self, ex_id: u64) -> Result<Option<P>,Error> {
+  async fn get_point(&self, ex_id: u64) -> Result<Option<P>,Error> {
     let mut lstore = self.lstore.lock().await;
     if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
       let mut offset = 1;
