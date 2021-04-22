@@ -5,6 +5,7 @@ use leveldb::iterator::{Iterable,LevelDBIterator};
 use std::collections::HashMap;
 use desert::{ToBytes,FromBytes,CountBytes};
 use eyros::Value;
+use async_std::sync::Arc;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
@@ -144,7 +145,7 @@ pub enum LUpdate {
 pub struct LStore {
   pub batch_size: usize,
   pub batch: Vec<LWrite>,
-  pub db: Database<Key>,
+  pub db: Arc<Database<Key>>,
   pub cache: lru::LruCache<Key,Vec<u8>>,
   pub updates: HashMap<Key,LUpdate>,
   pub count: usize,
@@ -155,7 +156,7 @@ impl LStore {
     Self {
       batch_size: 10_000,
       batch: vec![],
-      db,
+      db: Arc::new(db),
       cache: lru::LruCache::new(10_000),
       updates: HashMap::new(),
       count: 0,

@@ -11,6 +11,9 @@ use std::collections::{HashMap,HashSet};
 use async_std::{prelude::*,sync::{Arc,Mutex},io};
 use desert::FromBytesLE;
 
+use leveldb::iterator::{Iterable,LevelDBIterator};
+use leveldb::options::ReadOptions;
+
 type Error = Box<dyn std::error::Error+Send+Sync>;
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
@@ -44,13 +47,19 @@ impl Ingest {
   // loop over the db, denormalize the records, georender-pack the data,
   // store into eyros, and write backrefs into leveldb
   pub async fn process(&self) -> Result<(),Error> {
-    let mut estore = self.estore.lock().await;
+    let place_other = *georender_pack::osm_types::get_types().get("place.other").unwrap();
     let gt = Key::from(&vec![ID_PREFIX]);
     let lt = Key::from(&vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
-    let lc = self.lstore.clone();
-    let mut lstorec = lc.lock().await;
-    let mut iter = lstorec.iter(lt, gt);
-    let place_other = *georender_pack::osm_types::get_types().get("place.other").unwrap();
+    let db = {
+      let lstore = self.lstore.lock().await;
+      lstore.db.clone()
+    };
+    let mut iter = {
+      let i = db.iter(ReadOptions::new());
+      i.seek(&gt);
+      i.take_while(move |(k,_)| *k < lt)
+    };
+    //let mut iter = self.lstore.clone().lock().await.iter(lt, gt);
     while let Some((key,value)) = iter.next() {
       match decode(&key.data,&value)? {
         Decoded::Node(node) => {
@@ -65,10 +74,15 @@ impl Ingest {
         },
       }
     }
-    estore.flush().await?;
-    estore.sync().await?;
-    let mut lstore = self.lstore.lock().await;
-    lstore.flush()?;
+    {
+      let mut estore = self.estore.lock().await;
+      estore.flush().await?;
+      estore.sync().await?;
+    }
+    {
+      let mut lstore = self.lstore.lock().await;
+      lstore.flush()?;
+    }
     Ok(())
   }
 
@@ -367,7 +381,13 @@ impl Ingest {
     let mut lstore = self.lstore.lock().await;
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
+    let mut first = None;
     for r in iter {
+      if first.is_none() {
+        first = Some(*r);
+      } else if first == Some(*r) {
+        continue;
+      }
       let s = varint::encode(r*3+0,&mut key_data[1..])?;
       let key = Key::from(&key_data[0..1+s]);
       if let Some(buf) = lstore.get(&key)? {
@@ -385,13 +405,16 @@ impl Ingest {
   async fn get_relation_deps(&self, iter: impl Iterator<Item=&u64>,
     node_deps: &mut NodeDeps, way_deps: &mut WayDeps
   ) -> Result<(),Error> {
-    let mut lstore = self.lstore.lock().await;
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
     for m in iter {
       let s = varint::encode(m*3+1,&mut key_data[1..])?;
       let key = Key::from(&key_data[0..1+s]);
-      if let Some(buf) = lstore.get(&key)? {
+      let res = {
+        let mut lstore = self.lstore.lock().await;
+        lstore.get(&key)?
+      };
+      if let Some(buf) = res {
         match decode(&key.data,&buf)? {
           Decoded::Way(way) => {
             way_deps.insert(way.id, way.refs.clone());
