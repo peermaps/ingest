@@ -114,8 +114,6 @@ impl Ingest {
                 for r in new_set.difference(&prev_set) {
                   lstore.put(Key::from(&backref_key(way.id*3+1,*r)?),&vec![])?;
                 }
-                let buf = encode_refs(&data.refs)?;
-                lstore.put(Key::from(&ref_key(way.id*3+1)?), &buf)?;
               }
               Some((false,way.id*3+1))
             },
@@ -140,8 +138,6 @@ impl Ingest {
                 for r in new_set.difference(&prev_set) {
                   lstore.put(Key::from(&backref_key(relation.id*3+2,*r)?),&vec![])?;
                 }
-                let rbuf = encode_refs(&refs)?;
-                lstore.put(Key::from(&ref_key(relation.id*3+2)?), &rbuf)?;
               }
               Some((false,relation.id*3+2))
             },
@@ -162,20 +158,19 @@ impl Ingest {
           }
           let mut lstore = self.lstore.lock().await;
           lstore.del(Key::from(&id_key(ex_id)?))?;
-          lstore.del(Key::from(&ref_key(ex_id)?))?;
           for r in backrefs.iter() {
             lstore.del(Key::from(&backref_key(ex_id, *r)?))?;
           }
         } else {
-          if let Some(encoded) = encode_o5m(&dataset)? {
-            let mut lstore = self.lstore.lock().await;
-            lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
-          }
           let mut prev_points = Vec::with_capacity(backrefs.len());
           for r in backrefs.iter() {
             if let Some(pt) = self.get_point(*r).await? {
               prev_points.push(pt);
             }
+          }
+          if let Some(encoded) = encode_o5m(&dataset)? {
+            let mut lstore = self.lstore.lock().await;
+            lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
           }
           for (r,prev_point) in backrefs.iter().zip(prev_points.iter()) {
             self.recalculate(*r, prev_point).await?;
@@ -241,42 +236,58 @@ impl Ingest {
     Ok(())
   }
 
+  #[async_recursion::async_recursion]
   async fn get_point(&self, ex_id: u64) -> Result<Option<P>,Error> {
-    let mut lstore = self.lstore.lock().await;
-    if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
-      let mut offset = 1;
-      offset += varint::decode(&buf[offset..])?.0; // type
-      offset += varint::decode(&buf[offset..])?.0; // id
-      match buf[0] {
-        1 => { // point
-          let (s,lon) = f32::from_bytes_le(&buf[offset..offset+4])?;
+    fn merge(a: &P, b: &P) -> P {
+      (merge_pt(&a.0,&b.0),merge_pt(&a.1,&b.1))
+    }
+    fn merge_pt(a: &eyros::Coord<f32>, b: &eyros::Coord<f32>) -> eyros::Coord<f32> {
+      let amin = match a {
+        eyros::Coord::Scalar(x) => x,
+        eyros::Coord::Interval(x,_) => x,
+      };
+      let amax = match a {
+        eyros::Coord::Scalar(x) => x,
+        eyros::Coord::Interval(_,x) => x,
+      };
+      let bmin = match b {
+        eyros::Coord::Scalar(x) => x,
+        eyros::Coord::Interval(x,_) => x,
+      };
+      let bmax = match b {
+        eyros::Coord::Scalar(x) => x,
+        eyros::Coord::Interval(_,x) => x,
+      };
+      eyros::Coord::Interval(amin.min(*bmin), amax.max(*bmax))
+    }
+    Ok(match ex_id%3 {
+      0 => {
+        let mut lstore = self.lstore.lock().await;
+        if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
+          let mut offset = 0;
+          let (s,lon) = f32::from_bytes_le(&buf[offset..])?;
           offset += s;
           let (_s,lat) = f32::from_bytes_le(&buf[offset..])?;
-          Ok(Some((eyros::Coord::Scalar(lon),eyros::Coord::Scalar(lat))))
-        },
-        _ => { // line or area
-          let (s,p_count) = varint::decode(&buf[offset..])?;
-          offset += s;
-          let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-          for _ in 0..p_count {
-            let (s,lon) = f32::from_bytes_le(&buf[offset..])?;
-            offset += s;
-            let (s,lat) = f32::from_bytes_le(&buf[offset..])?;
-            offset += s;
-            bbox.0 = bbox.0.min(lon);
-            bbox.1 = bbox.1.min(lat);
-            bbox.2 = bbox.2.max(lon);
-            bbox.3 = bbox.3.max(lat);
-          }
-          Ok(Some((
-            eyros::Coord::Interval(bbox.0,bbox.2),
-            eyros::Coord::Interval(bbox.1,bbox.3),
-          )))
+          Some((eyros::Coord::Scalar(lon),eyros::Coord::Scalar(lat)))
+        } else {
+          None
         }
-      }
-    } else {
-      Ok(None)
-    }
+      },
+      _ => {
+        let refs = self.get_refs(ex_id).await?;
+        let mut bbox = None;
+        for r in refs.iter() {
+          if let Some(p) = self.get_point(*r).await? {
+            if let Some(b) = bbox {
+              bbox = Some(merge(&b, &p));
+            } else {
+              bbox = Some(p);
+            }
+          }
+        }
+        bbox
+      },
+    })
   }
 
   async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
@@ -318,8 +329,6 @@ impl Ingest {
         // node -> way backref
         lstore.put(Key::from(&backref_key(*r*3+0, way.id*3+1)?), &vec![])?;
       }
-      let buf = encode_refs(&deps.keys().map(|x| *x).collect::<Vec<u64>>())?;
-      lstore.put(Key::from(&ref_key(way.id*3+1)?), &buf)?;
     }
     Ok(())
   }
@@ -334,8 +343,6 @@ impl Ingest {
         // way -> relation backref
         lstore.put(Key::from(&backref_key(way_id*3+1,relation.id*3+2)?), &vec![])?;
       }
-      let buf = encode_refs(&deps.keys().map(|x| *x).collect::<Vec<u64>>())?;
-      lstore.put(Key::from(&ref_key(relation.id*3+2)?), &buf)?;
     }
     Ok(())
   }
@@ -455,11 +462,45 @@ impl Ingest {
 
   async fn get_refs(&self, ex_id: u64) -> Result<Vec<u64>,Error> {
     let mut lstore = self.lstore.lock().await;
-    if let Some(buf) = lstore.get(&Key::from(&ref_key(ex_id)?))? {
-      decode_refs(&buf)
-    } else {
-      Ok(vec![])
-    }
+    Ok(match ex_id%3 {
+      0 => vec![], // node
+      1 => { // way
+        if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
+          let mut offset = 0;
+          let (s,_fta) = varint::decode(&buf[offset..])?;
+          offset += s;
+          let (s,reflen) = varint::decode(&buf[offset..])?;
+          offset += s;
+          let mut refs = Vec::with_capacity(reflen as usize);
+          for _ in 0..reflen {
+            let (s,r) = varint::decode(&buf[offset..])?;
+            offset += s;
+            refs.push(r);
+          }
+          refs
+        } else {
+          vec![]
+        }
+      },
+      _ => { // relation
+        if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
+          let mut offset = 0;
+          let (s,_fta) = varint::decode(&buf[offset..])?;
+          offset += s;
+          let (s,mlen) = varint::decode(&buf[offset..])?;
+          offset += s;
+          let mut refs = Vec::with_capacity(mlen as usize);
+          for _ in 0..mlen {
+            let (s,r) = varint::decode(&buf[offset..])?;
+            offset += s;
+            refs.push(r/2);
+          }
+          refs
+        } else {
+          vec![]
+        }
+      },
+    })
   }
 }
 
@@ -470,35 +511,4 @@ fn backref_key(a: u64, b: u64) -> Result<Vec<u8>,Error> {
   let s = varint::encode(a, &mut key[1..])?;
   varint::encode(b, &mut key[1+s..])?;
   Ok(key)
-}
-
-fn ref_key(ex_id: u64) -> Result<Vec<u8>,Error> {
-  let mut key = vec![0u8;1+varint::length(ex_id)];
-  key[0] = REF_PREFIX;
-  varint::encode(ex_id, &mut key[1..])?;
-  Ok(key)
-}
-
-fn encode_refs(refs: &[u64]) -> Result<Vec<u8>,Error> {
-  let mut len = 0;
-  for r in refs.iter() {
-    len += varint::length(*r);
-  }
-  let mut buf = vec![0u8;len];
-  let mut offset = 0;
-  for r in refs.iter() {
-    offset += varint::encode(*r, &mut buf[offset..])?;
-  }
-  Ok(buf)
-}
-
-fn decode_refs(buf: &[u8]) -> Result<Vec<u64>,Error> {
-  let mut refs = vec![];
-  let mut offset = 0;
-  while offset < buf.len() {
-    let (s,r) = varint::decode(&buf[offset..])?;
-    offset += s;
-    refs.push(r);
-  }
-  Ok(refs)
 }
