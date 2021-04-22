@@ -1,9 +1,6 @@
 use peermaps_ingest::{Ingest,Key,EStore,LStore};
 use leveldb::{database::Database,options::Options};
-use leveldb::iterator::{LevelDBIterator,Iterable};
-use leveldb::kv::KV;
-use std::collections::HashMap;
-use async_std::{prelude::*,sync::{Arc,Mutex},io,fs::File};
+use async_std::{io,fs::File};
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 

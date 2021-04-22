@@ -21,7 +21,7 @@ leveldb = "0.8.6"
 failure = "0.1.8"
 db-key = "0.0.5"
 leveldb-sys = "2.0.8"
-osm-is-area = "0.1.4"
+osm-is-area = "1.0.0"
 random-access-disk = "2.0.0"
 o5m-stream = { path = "../o5m-stream.rs" }
 lru = "0.6.5"

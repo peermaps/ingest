@@ -35,7 +35,7 @@ pub struct DecodedRelation {
   pub labels: Vec<u8>,
 }
 
-pub fn encode_osmpbf<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> {
+pub fn encode_osmpbf(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> {
   let tags = match element {
     osmpbf::Element::Node(node) => node.tags().collect::<Vec<_>>(),
     osmpbf::Element::DenseNode(node) => node.tags().collect::<Vec<_>>(),
@@ -74,7 +74,8 @@ pub fn encode_osmpbf<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),
       let refs: Vec<i64> = way.refs().into_iter().collect();
       let rsize = varint::length(refs.len() as u64)
         + refs.iter().fold(0usize,|sum,r| sum + varint::length(*r as u64));
-      let is_area = osm_is_area::way(&way.tags().collect(), &way.refs().collect()) as u64;
+      let tagv = way.tags().collect::<Vec<_>>();
+      let is_area = osm_is_area::way(&tagv, &way.refs().collect::<Vec<_>>()) as u64;
       let fta = ft*2+is_area;
       let mut buf = vec![0u8;varint::length(fta)+rsize+labels.len()];
       let mut offset = 0;
@@ -99,7 +100,8 @@ pub fn encode_osmpbf<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),
         .collect();
       let msize = varint::length(members.len() as u64)
         + members.iter().fold(0usize,|sum,m| sum + varint::length(*m));
-      let is_area = osm_is_area::relation(&relation.tags().collect(), &vec![1]) as u64;
+      let tagv = relation.tags().collect::<Vec<_>>();
+      let is_area = osm_is_area::relation(&tagv, &vec![1]) as u64;
       let fta = ft*2+is_area;
       let mut buf = vec![0u8;varint::length(fta)+msize+labels.len()];
       let mut offset = 0;
@@ -114,22 +116,78 @@ pub fn encode_osmpbf<'a>(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),
   }
 }
 
-pub fn encode_o5m<'a>(dataset: &o5m_stream::Dataset) -> Result<Option<(Vec<u8>,Vec<u8>)>,Error> {
-  let (ex_id,tags) = match dataset {
-    o5m_stream::Dataset::Node(node) => {
-      (node.id*3+0,&node.tags)
-    },
-    o5m_stream::Dataset::Way(way) => {
-      (way.id*3+1,&way.tags)
-    },
-    o5m_stream::Dataset::Relation(relation) => {
-      (relation.id*3+2,&relation.tags)
-    },
+pub fn encode_o5m(dataset: &o5m_stream::Dataset) -> Result<Option<Vec<u8>>,Error> {
+  let tags = match dataset {
+    o5m_stream::Dataset::Node(node) => &node.tags,
+    o5m_stream::Dataset::Way(way) => &way.tags,
+    o5m_stream::Dataset::Relation(relation) => &relation.tags,
     _ => { return Ok(None) },
   };
-  eprintln!["ex_id={}, tags={:?}",ex_id,tags];
-  // TODO
-  Ok(Some((vec![],vec![])))
+  let tagv = tags.iter()
+    .map(|(k,v)| (k.as_str(),v.as_str()))
+    .collect::<Vec<_>>();
+  let (ft,labels) = georender_pack::tags::parse(&tagv)?;
+  match dataset {
+    o5m_stream::Dataset::Node(node) => {
+      Ok(if let Some(data) = &node.data {
+        let mut buf = vec![0u8;4+4+varint::length(ft)+labels.len()];
+        let mut offset = 0;
+        offset += data.get_longitude().write_bytes_be(&mut buf[offset..])?;
+        offset += data.get_latitude().write_bytes_be(&mut buf[offset..])?;
+        offset += varint::encode(ft, &mut buf[offset..])?;
+        buf[offset..].copy_from_slice(&labels);
+        Some(buf)
+      } else {
+        None
+      })
+    },
+    o5m_stream::Dataset::Way(way) => {
+      Ok(if let Some(data) = &way.data {
+        let rsize = varint::length(data.refs.len() as u64)
+          + data.refs.iter().fold(0usize,|sum,r| sum + varint::length(*r));
+        let is_area = osm_is_area::way(&tagv, &data.refs) as u64;
+        let fta = ft*2+is_area;
+        let mut buf = vec![0u8;varint::length(fta)+rsize+labels.len()];
+        let mut offset = 0;
+        offset += varint::encode(fta, &mut buf[offset..])?;
+        offset += varint::encode(data.refs.len() as u64, &mut buf[offset..])?;
+        for r in data.refs.iter() {
+          offset += varint::encode(*r, &mut buf[offset..])?;
+        }
+        buf[offset..].copy_from_slice(&labels);
+        Some(buf)
+      } else {
+        None
+      })
+    },
+    o5m_stream::Dataset::Relation(relation) => {
+      Ok(if let Some(data) = &relation.data {
+        let members: Vec<u64> = data.members.iter()
+          .filter(|m| {
+            m.element_type == o5m_stream::ElementType::Way()
+              && (m.role == "inner" || m.role == "outer")
+          })
+          .map(|m| m.id*2 + match m.role.as_str() { "inner" => 1, _ => 0 })
+          .collect();
+        let msize = varint::length(members.len() as u64)
+          + members.iter().fold(0usize,|sum,m| sum + varint::length(*m));
+        let is_area = osm_is_area::relation(&tagv, &vec![1]) as u64;
+        let fta = ft*2+is_area;
+        let mut buf = vec![0u8;varint::length(fta)+msize+labels.len()];
+        let mut offset = 0;
+        offset += varint::encode(fta, &mut buf[offset..])?;
+        offset += varint::encode(members.len() as u64, &mut buf[offset..])?;
+        for m in members.iter() {
+          offset += varint::encode(*m as u64, &mut buf[offset..])?;
+        }
+        buf[offset..].copy_from_slice(&labels);
+        Some(buf)
+      } else {
+        None
+      })
+    },
+    _ => Ok(None),
+  }
 }
 
 pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {

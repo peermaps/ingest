@@ -5,8 +5,9 @@ pub use store::*;
 pub mod varint;
 
 pub const BACKREF_PREFIX: u8 = 1;
+pub const REF_PREFIX: u8 = 2;
 
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use async_std::{prelude::*,sync::{Arc,Mutex},io};
 use desert::FromBytesLE;
 
@@ -34,7 +35,7 @@ impl Ingest {
     let mut lstore = self.lstore.lock().await;
     osmpbf::ElementReader::from_path(pbf_file)?.for_each(|element| {
       let (key,value) = encode_osmpbf(&element).unwrap();
-      lstore.put(Key::from(&key), &value);
+      lstore.put(Key::from(&key), &value).unwrap(); // TODO: should bubble up
     })?;
     lstore.flush()?;
     Ok(())
@@ -48,10 +49,9 @@ impl Ingest {
     let lt = Key::from(&vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
     let lc = self.lstore.clone();
     let mut lstorec = lc.lock().await;
-    let mut iter = lstorec.iter(&lt, &gt);
+    let mut iter = lstorec.iter(lt, gt);
     let place_other = *georender_pack::osm_types::get_types().get("place.other").unwrap();
     while let Some((key,value)) = iter.next() {
-      //if key.data > lt.data { break }
       match decode(&key.data,&value)? {
         Decoded::Node(node) => {
           if node.feature_type == place_other { continue }
@@ -77,64 +77,86 @@ impl Ingest {
     let mut stream = o5m_stream::decode(infile);
     while let Some(result) = stream.next().await {
       let dataset = result?;
-      let m = match dataset {
+      let m = match &dataset {
         o5m_stream::Dataset::Node(node) => {
           match &node.data {
-            Some(data) => { // modify or create
-              let pt = (
-                eyros::Coord::Scalar(data.get_longitude()),
-                eyros::Coord::Scalar(data.get_latitude())
-              );
-              Some((false,pt,node.id*3+0))
-            },
-            None => { // delete
-              let key = Key::from(&id_key(node.id*3+0)?);
-              let mut lstore = self.lstore.lock().await;
-              match lstore.get(&key.clone())? {
-                Some(buf) => {
-                  let decoded = decode(&key.data,&buf)?;
-                  if let Decoded::Node(node) = decoded {
-                    let pt = (
-                      eyros::Coord::Scalar(node.lon),
-                      eyros::Coord::Scalar(node.lat),
-                    );
-                    Some((true,pt,node.id*3+0))
-                  } else {
-                    return Err(Box::new(failure::err_msg(
-                      "expected node, got unexpected decoded type"
-                    ).compat()));
-                  }
-                },
-                None => None,
-              }
-            },
+            Some(_) => Some((false,node.id*3+0)), // modify or create
+            None => Some((true,node.id*3+0)), // delete
           }
         },
         o5m_stream::Dataset::Way(way) => {
-          unimplemented![]
+          match &way.data {
+            Some(data) => { // modify or create
+              let mut deps = HashMap::with_capacity(data.refs.len());
+              self.get_way_deps(data.refs.iter(), &mut deps).await?;
+              let refs = self.get_refs(way.id*3+1).await?;
+              let prev_set = refs.into_iter().collect::<HashSet<u64>>();
+              let new_set = deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
+              {
+                let mut lstore = self.lstore.lock().await;
+                for r in prev_set.difference(&new_set) {
+                  lstore.del(Key::from(&backref_key(way.id*3+1, *r)?))?;
+                }
+                for r in new_set.difference(&prev_set) {
+                  lstore.put(Key::from(&backref_key(way.id*3+1,*r)?),&vec![])?;
+                }
+                let buf = encode_refs(&data.refs)?;
+                lstore.put(Key::from(&ref_key(way.id*3+1)?), &buf)?;
+              }
+              Some((false,way.id*3+1))
+            },
+            None => Some((true,way.id*3+1)), // delete
+          }
         },
         o5m_stream::Dataset::Relation(relation) => {
-          unimplemented![]
+          match &relation.data {
+            Some(data) => { // modify or create
+              let mut node_deps = HashMap::new();
+              let mut way_deps = HashMap::with_capacity(data.members.len());
+              let refs = data.members.iter().map(|m| m.id).collect::<Vec<u64>>();
+              self.get_relation_deps(refs.iter(), &mut node_deps, &mut way_deps).await?;
+              let prev_refs = self.get_refs(relation.id*3+2).await?;
+              let prev_set = prev_refs.into_iter().collect::<HashSet<u64>>();
+              let new_set = way_deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
+              {
+                let mut lstore = self.lstore.lock().await;
+                for r in prev_set.difference(&new_set) {
+                  lstore.del(Key::from(&backref_key(relation.id*3+2, *r)?))?;
+                }
+                for r in new_set.difference(&prev_set) {
+                  lstore.put(Key::from(&backref_key(relation.id*3+2,*r)?),&vec![])?;
+                }
+                let rbuf = encode_refs(&refs)?;
+                lstore.put(Key::from(&ref_key(relation.id*3+2)?), &rbuf)?;
+              }
+              Some((false,relation.id*3+2))
+            },
+            None => Some((true,relation.id*3+2)), // delete
+          }
         },
         _ => None,
       };
-      if let Some((is_rm,pt,ex_id)) = m {
-        //println!["{} {:?}", is_rm, pt];
+      if let Some((is_rm,ex_id)) = m {
         let backrefs = self.get_backrefs(ex_id).await?;
         if is_rm {
           // delete the record but don't bother dealing with backrefs
           // because the referred-to elements *should* be deleted too.
           // not the job of this ingest script to verify changeset integrity
-          // TODO: use ex_id directly once georender-pack is updated
-          let mut estore = self.estore.lock().await;
-          estore.delete(pt, ex_id/3).await?;
+          if let Some(pt) = self.get_point(ex_id).await? {
+            let mut estore = self.estore.lock().await;
+            estore.delete(pt, ex_id).await?;
+          }
           let mut lstore = self.lstore.lock().await;
-          lstore.put(Key::from(&id_key(ex_id)?), &vec![])?;
+          lstore.del(Key::from(&id_key(ex_id)?))?;
+          lstore.del(Key::from(&ref_key(ex_id)?))?;
           for r in backrefs.iter() {
-            lstore.put(Key::from(&backref_key(ex_id, *r)?), &vec![])?;
+            lstore.del(Key::from(&backref_key(ex_id, *r)?))?;
           }
         } else {
-          //let encoded = encode_o5m(dataset);
+          if let Some(encoded) = encode_o5m(&dataset)? {
+            let mut lstore = self.lstore.lock().await;
+            lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
+          }
           let mut prev_points = Vec::with_capacity(backrefs.len());
           for r in backrefs.iter() {
             if let Some(pt) = self.get_point(*r).await? {
@@ -174,8 +196,6 @@ impl Ingest {
               }
             }
             {
-              let mut lstore = self.lstore.lock().await;
-              lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
               let mut estore = self.estore.lock().await;
               estore.push_update(prev_point, &new_point, &encoded.into());
             }
@@ -194,8 +214,6 @@ impl Ingest {
               }
             }
             {
-              let mut lstore = self.lstore.lock().await;
-              lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
               let mut estore = self.estore.lock().await;
               estore.push_update(prev_point, &new_point, &encoded.into());
             }
@@ -240,8 +258,7 @@ impl Ingest {
             eyros::Coord::Interval(bbox.0,bbox.2),
             eyros::Coord::Interval(bbox.1,bbox.3),
           )))
-        },
-        _ => Ok(None),
+        }
       }
     } else {
       Ok(None)
@@ -250,29 +267,26 @@ impl Ingest {
 
   async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
     let encoded = georender_pack::encode::node_from_parsed(
-      node.id, (node.lon,node.lat), node.feature_type, &node.labels
+      node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
     )?;
     let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
     let mut estore = self.estore.lock().await;
-    estore.create(point, encoded.into());
+    estore.create(point, encoded.into()).await?;
     Ok(())
   }
 
   async fn encode_way(&self, way: &DecodedWay) -> Result<Option<(P,NodeDeps,Vec<u8>)>,Error> {
     let mut deps = HashMap::with_capacity(way.refs.len());
-    self.get_way_deps(&way, &mut deps).await?;
+    self.get_way_deps(way.refs.iter(), &mut deps).await?;
     let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-    let mut pcount = 0;
     for (lon,lat) in deps.values() {
       bbox.0 = bbox.0.min(*lon);
       bbox.1 = bbox.1.min(*lat);
       bbox.2 = bbox.2.max(*lon);
       bbox.3 = bbox.3.max(*lat);
-      pcount += 1;
     }
-    if pcount <= 1 { return Ok(None) }
     let encoded = georender_pack::encode::way_from_parsed(
-      way.id, way.feature_type, way.is_area, &way.labels, &way.refs, &deps
+      way.id*3+1, way.feature_type, way.is_area, &way.labels, &way.refs, &deps
     )?;
     let point = (
       eyros::Coord::Interval(bbox.0,bbox.2),
@@ -284,12 +298,14 @@ impl Ingest {
   async fn create_way(&self, way: &DecodedWay) -> Result<(),Error> {
     if let Some((point,deps,encoded)) = self.encode_way(way).await? {
       let mut estore = self.estore.lock().await;
-      estore.create(point, encoded.into());
+      estore.create(point, encoded.into()).await?;
       let mut lstore = self.lstore.lock().await;
       for r in deps.keys() {
         // node -> way backref
-        lstore.put(Key::from(&backref_key(*r*3+0, way.id*3+1)?), &vec![]);
+        lstore.put(Key::from(&backref_key(*r*3+0, way.id*3+1)?), &vec![])?;
       }
+      let buf = encode_refs(&deps.keys().map(|x| *x).collect::<Vec<u64>>())?;
+      lstore.put(Key::from(&ref_key(way.id*3+1)?), &buf)?;
     }
     Ok(())
   }
@@ -297,13 +313,15 @@ impl Ingest {
   async fn create_relation(&self, relation: &DecodedRelation) -> Result<(),Error> {
     if let Some((point,deps,encoded)) = self.encode_relation(relation).await? {
       let mut estore = self.estore.lock().await;
-      estore.create(point, encoded.into());
+      estore.create(point, encoded.into()).await?;
 
       let mut lstore = self.lstore.lock().await;
       for way_id in deps.keys() {
         // way -> relation backref
-        lstore.put(Key::from(&backref_key(way_id*3+1,relation.id*3+2)?), &vec![]);
+        lstore.put(Key::from(&backref_key(way_id*3+1,relation.id*3+2)?), &vec![])?;
       }
+      let buf = encode_refs(&deps.keys().map(|x| *x).collect::<Vec<u64>>())?;
+      lstore.put(Key::from(&ref_key(relation.id*3+2)?), &buf)?;
     }
     Ok(())
   }
@@ -311,9 +329,9 @@ impl Ingest {
   async fn encode_relation(&self, relation: &DecodedRelation) -> Result<Option<(P,WayDeps,Vec<u8>)>,Error> {
     let mut node_deps = HashMap::new();
     let mut way_deps = HashMap::with_capacity(relation.members.len());
-    self.get_relation_deps(&relation, &mut node_deps, &mut way_deps).await?;
+    let refs = relation.members.iter().map(|m| m/2).collect::<Vec<u64>>();
+    self.get_relation_deps(refs.iter(), &mut node_deps, &mut way_deps).await?;
     let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-    let mut pcount = 0;
     for refs in way_deps.values() {
       for r in refs.iter() {
         if let Some(p) = node_deps.get(r) {
@@ -321,11 +339,9 @@ impl Ingest {
           bbox.1 = bbox.1.min(p.1);
           bbox.2 = bbox.2.max(p.0);
           bbox.3 = bbox.3.max(p.1);
-          pcount += 1;
         }
       }
     }
-    if pcount <= 1 { return Ok(None) }
     let members = relation.members.iter().map(|m| {
       georender_pack::Member::new(
         m/2,
@@ -337,7 +353,7 @@ impl Ingest {
       )
     }).collect::<Vec<_>>();
     let encoded = georender_pack::encode::relation_from_parsed(
-      relation.id, relation.feature_type, relation.is_area,
+      relation.id*3+2, relation.feature_type, relation.is_area,
       &relation.labels, &members, &node_deps, &way_deps
     )?;
     let point = (
@@ -347,11 +363,11 @@ impl Ingest {
     Ok(Some((point,way_deps,encoded)))
   }
 
-  async fn get_way_deps(&self, way: &DecodedWay, deps: &mut NodeDeps) -> Result<(),Error> {
+  async fn get_way_deps(&self, iter: impl Iterator<Item=&u64>, deps: &mut NodeDeps) -> Result<(),Error> {
     let mut lstore = self.lstore.lock().await;
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
-    for r in way.refs.iter() {
+    for r in iter {
       let s = varint::encode(r*3+0,&mut key_data[1..])?;
       let key = Key::from(&key_data[0..1+s]);
       if let Some(buf) = lstore.get(&key)? {
@@ -366,21 +382,20 @@ impl Ingest {
     Ok(())
   }
 
-  async fn get_relation_deps(&self, relation: &DecodedRelation,
+  async fn get_relation_deps(&self, iter: impl Iterator<Item=&u64>,
     node_deps: &mut NodeDeps, way_deps: &mut WayDeps
   ) -> Result<(),Error> {
     let mut lstore = self.lstore.lock().await;
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
-    for m in relation.members.iter() {
-      let s = varint::encode((m/2)*3+1,&mut key_data[1..])?;
+    for m in iter {
+      let s = varint::encode(m*3+1,&mut key_data[1..])?;
       let key = Key::from(&key_data[0..1+s]);
       if let Some(buf) = lstore.get(&key)? {
         match decode(&key.data,&buf)? {
           Decoded::Way(way) => {
-            //assert![way.id == m/2, "{} != {}", way.id, m/2];
             way_deps.insert(way.id, way.refs.clone());
-            self.get_way_deps(&way, node_deps).await?;
+            self.get_way_deps(way.refs.iter(), node_deps).await?;
           },
           _ => {},
         }
@@ -414,6 +429,15 @@ impl Ingest {
     }
     Ok(results)
   }
+
+  async fn get_refs(&self, ex_id: u64) -> Result<Vec<u64>,Error> {
+    let mut lstore = self.lstore.lock().await;
+    if let Some(buf) = lstore.get(&Key::from(&ref_key(ex_id)?))? {
+      decode_refs(&buf)
+    } else {
+      Ok(vec![])
+    }
+  }
 }
 
 fn backref_key(a: u64, b: u64) -> Result<Vec<u8>,Error> {
@@ -423,4 +447,35 @@ fn backref_key(a: u64, b: u64) -> Result<Vec<u8>,Error> {
   let s = varint::encode(a, &mut key[1..])?;
   varint::encode(b, &mut key[1+s..])?;
   Ok(key)
+}
+
+fn ref_key(ex_id: u64) -> Result<Vec<u8>,Error> {
+  let mut key = vec![0u8;1+varint::length(ex_id)];
+  key[0] = REF_PREFIX;
+  varint::encode(ex_id, &mut key[1..])?;
+  Ok(key)
+}
+
+fn encode_refs(refs: &[u64]) -> Result<Vec<u8>,Error> {
+  let mut len = 0;
+  for r in refs.iter() {
+    len += varint::length(*r);
+  }
+  let mut buf = vec![0u8;len];
+  let mut offset = 0;
+  for r in refs.iter() {
+    offset += varint::encode(*r, &mut buf[offset..])?;
+  }
+  Ok(buf)
+}
+
+fn decode_refs(buf: &[u8]) -> Result<Vec<u64>,Error> {
+  let mut refs = vec![];
+  let mut offset = 0;
+  while offset < buf.len() {
+    let (s,r) = varint::decode(&buf[offset..])?;
+    offset += s;
+    refs.push(r);
+  }
+  Ok(refs)
 }

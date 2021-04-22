@@ -91,7 +91,7 @@ impl EStore {
   }
   pub async fn delete(&mut self, point: P, id: <V as Value>::Id) -> Result<(),Error> {
     self.batch.push(eyros::Row::Delete(point,id));
-    self.check_flush();
+    self.check_flush().await?;
     Ok(())
   }
   pub async fn check_flush(&mut self) -> Result<(),Error> {
@@ -212,10 +212,10 @@ impl LStore {
     Ok(())
   }
   // does not splice records in from self.updated:
-  pub fn iter(&mut self, lt: &Key, gt: &Key) -> impl Iterator<Item=(Key,Vec<u8>)>+'_ {
+  pub fn iter(&mut self, lt: Key, gt: Key) -> impl Iterator<Item=(Key,Vec<u8>)>+'_ {
     let i = self.db.iter(ReadOptions::new());
-    i.seek(gt);
-    i
+    i.seek(&gt);
+    i.take_while(move |(k,_)| *k < lt)
   }
   pub fn keys_iter(&mut self, lt: Key, gt: Key) -> impl Iterator<Item=Key>+'_ {
     let ki = self.db.keys_iter(ReadOptions::new());
