@@ -1,11 +1,14 @@
-use peermaps_ingest::encoder::{encode,decode,Decoded,DecodedNode,DecodedWay,DecodedRelation};
+use peermaps_ingest::encoder::{
+  encode_osmpbf,
+  decode,Decoded,DecodedNode,DecodedWay,DecodedRelation
+};
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
 #[test]
 fn encoder() -> Result<(),Error> {
   osmpbf::ElementReader::from_path("tests/data/node.pbf")?.for_each(|element| {
-    let (key,value) = encode(&element).unwrap();
+    let (key,value) = encode_osmpbf(&element).unwrap();
     let decoded = decode(&key,&value).unwrap();
     assert_eq![decoded, Decoded::Node(DecodedNode {
       id: 1312,
@@ -16,7 +19,7 @@ fn encoder() -> Result<(),Error> {
     })];
   })?;
   osmpbf::ElementReader::from_path("tests/data/way.pbf")?.for_each(|element| {
-    let (key,value) = encode(&element).unwrap();
+    let (key,value) = encode_osmpbf(&element).unwrap();
     let decoded = decode(&key,&value).unwrap();
     assert_eq![decoded, Decoded::Way(DecodedWay {
       id: 555,
@@ -27,7 +30,7 @@ fn encoder() -> Result<(),Error> {
     })];
   })?;
   osmpbf::ElementReader::from_path("tests/data/relation.pbf")?.for_each(|element| {
-    let (key,value) = encode(&element).unwrap();
+    let (key,value) = encode_osmpbf(&element).unwrap();
     let decoded = decode(&key,&value).unwrap();
     assert_eq![decoded, Decoded::Relation(DecodedRelation {
       id: 700,
