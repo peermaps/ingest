@@ -453,7 +453,6 @@ impl Ingest {
     let mut results = vec![];
     let mut iter = lstore.keys_iter(lt, gt);
     while let Some(key) = iter.next() {
-      //if key.data > lt.data { break }
       let (_,r_id) = varint::decode(&key.data[1+ex_id_len..])?;
       results.push(r_id);
     }

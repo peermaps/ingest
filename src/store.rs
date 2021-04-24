@@ -137,6 +137,7 @@ pub enum LWrite {
   Put((Key,Vec<u8>)),
   Del(Key)
 }
+#[derive(PartialOrd,PartialEq,Ord,Eq)]
 pub enum LUpdate {
   Put(Vec<u8>),
   Del()
@@ -222,16 +223,16 @@ impl LStore {
     let ki = self.db.keys_iter(ReadOptions::new());
     ki.seek(&gt);
     // todo: cache the sorted keys
-    let mut ukeys = self.updates.iter()
-      .filter(|(_,v)| match v { LUpdate::Put(_) => true, _ => false })
-      .skip_while(|(k,_)| *k < &gt)
-      .take_while(|(k,_)| *k < &lt)
-      .map(|(key,_)| key.clone())
-      .collect::<Vec<Key>>();
+    let mut ukeys = self.updates.iter().collect::<Vec<_>>();
     ukeys.sort();
+    let lt_c = lt.clone();
     interleaved_ordered::interleave_ordered(
-      ki.take_while(move |k| *k < lt),
-      ukeys
+      ki.take_while(move |k| k < &lt_c),
+      ukeys.into_iter()
+        .filter(|(_,v)| match v { LUpdate::Put(_) => true, _ => false })
+        .skip_while(move |(k,_)| *k < &gt)
+        .take_while(move |(k,_)| *k < &lt)
+        .map(|(key,_)| (*key).clone())
     )
   }
 }
