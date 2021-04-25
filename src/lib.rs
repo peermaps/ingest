@@ -294,9 +294,11 @@ impl Ingest {
     let encoded = georender_pack::encode::node_from_parsed(
       node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
     )?;
-    let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
-    let mut estore = self.estore.lock().await;
-    estore.create(point, encoded.into()).await?;
+    if !encoded.is_empty() {
+      let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
+      let mut estore = self.estore.lock().await;
+      estore.create(point, encoded.into()).await?;
+    }
     Ok(())
   }
 
@@ -313,11 +315,15 @@ impl Ingest {
     let encoded = georender_pack::encode::way_from_parsed(
       way.id*3+1, way.feature_type, way.is_area, &way.labels, &way.refs, &deps
     )?;
-    let point = (
-      eyros::Coord::Interval(bbox.0,bbox.2),
-      eyros::Coord::Interval(bbox.1,bbox.3),
-    );
-    Ok(Some((point,deps,encoded)))
+    if encoded.is_empty() {
+      Ok(None)
+    } else {
+      let point = (
+        eyros::Coord::Interval(bbox.0,bbox.2),
+        eyros::Coord::Interval(bbox.1,bbox.3),
+      );
+      Ok(Some((point,deps,encoded)))
+    }
   }
 
   async fn create_way(&self, way: &DecodedWay) -> Result<(),Error> {
@@ -377,11 +383,15 @@ impl Ingest {
       relation.id*3+2, relation.feature_type, relation.is_area,
       &relation.labels, &members, &node_deps, &way_deps
     )?;
-    let point = (
-      eyros::Coord::Interval(bbox.0,bbox.2),
-      eyros::Coord::Interval(bbox.1,bbox.3),
-    );
-    Ok(Some((point,way_deps,encoded)))
+    if encoded.is_empty() {
+      Ok(None)
+    } else {
+      let point = (
+        eyros::Coord::Interval(bbox.0,bbox.2),
+        eyros::Coord::Interval(bbox.1,bbox.3),
+      );
+      Ok(Some((point,way_deps,encoded)))
+    }
   }
 
   async fn get_way_deps(&self, iter: impl Iterator<Item=&u64>, deps: &mut NodeDeps) -> Result<(),Error> {
