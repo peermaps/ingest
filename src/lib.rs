@@ -21,8 +21,8 @@ type WayDeps = HashMap<u64,Vec<u64>>;
 type P = (eyros::Coord<f32>,eyros::Coord<f32>);
 
 pub struct Ingest {
-  lstore: Arc<Mutex<LStore>>,
-  estore: Arc<Mutex<EStore>>,
+  pub lstore: Arc<Mutex<LStore>>,
+  pub estore: Arc<Mutex<EStore>>,
 }
 
 impl Ingest {
@@ -59,17 +59,21 @@ impl Ingest {
       i.seek(&gt);
       i.take_while(move |(k,_)| *k < lt)
     };
-    //let mut iter = self.lstore.clone().lock().await.iter(lt, gt);
     while let Some((key,value)) = iter.next() {
+      // presumably, if a feature doesn't have distinguishing tags,
+      // it could be referred to by other geometry, so skip it
+      // to save space in the final output
       match decode(&key.data,&value)? {
         Decoded::Node(node) => {
           if node.feature_type == place_other { continue }
           self.create_node(&node).await?;
         },
         Decoded::Way(way) => {
+          if way.feature_type == place_other { continue }
           self.create_way(&way).await?;
         },
         Decoded::Relation(relation) => {
+          if relation.feature_type == place_other { continue }
           self.create_relation(&relation).await?;
         },
       }

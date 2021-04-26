@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <node id="1312" lon="13.02" lat="37.00">
+    <tag k="amenity" v="cafe" />
+  </node>
+  <node id="1313" lon="13.00" lat="37.00" />
+  <node id="1314" lon="13.01" lat="37.01" />
+  <node id="1315" lon="13.02" lat="37.00" />
+  <node id="2000" lon="13.03" lat="37.03">
+    <tag k="amenity" v="bus_station" />
+  </node>
+  <node id="9000" lon="5.000" lat="-10.000" />
+  <node id="9001" lon="5.000" lat="-10.010" />
+  <node id="9002" lon="5.010" lat="-10.010" />
+  <node id="9003" lon="5.010" lat="-10.000" />
+  <node id="9004" lon="5.005" lat="-10.003" />
+  <node id="9005" lon="5.006" lat="-10.004" />
+  <node id="9006" lon="5.007" lat="-10.003" />
+  <way id="555">
+    <nd ref="1313" />
+    <nd ref="1314" />
+    <nd ref="1315" />
+    <nd ref="1313" />
+    <tag k="leisure" v="park" />
+    <tag k="name" v="triangle park" />
+  </way>
+  <way id="600">
+    <nd ref="9000" />
+    <nd ref="9001" />
+    <nd ref="9002" />
+    <nd ref="9003" />
+    <nd ref="9000" />
+  </way>
+  <way id="601">
+    <nd ref="9004" />
+    <nd ref="9005" />
+    <nd ref="9006" />
+    <nd ref="9004" />
+  </way>
+  <relation id="700">
+    <member type="way" role="outer" ref="600" />
+    <member type="way" role="inner" ref="601" />
+    <tag k="type" v="multipolygon" />
+    <tag k="natural" v="water" />
+    <tag k="name" v="cool lake" />
+  </way>
+</osm>

@@ -1,0 +1,26 @@
+<osmChange version="0.6">
+  <modify>
+    <node id="2000" lon="13.03" lat="37.04">
+      <tag k="highway" v="bus_stop" />
+    </node>
+    <node id="9000" lon="4.999" lat="-9.999" />
+  </modify>
+  <delete>
+    <node id="9003" />
+  </delete>
+  <create>
+    <node id="9007" lon="5.001" lat="-10.001" />
+  </create>
+  <delete>
+    <way id="555" />
+  </delete>
+  <modify>
+    <way id="600">
+      <nd ref="9000" />
+      <nd ref="9001" />
+      <nd ref="9002" />
+      <nd ref="9007" />
+      <nd ref="9000" />
+    </way>
+  </modify>
+</osmChange>
