@@ -226,6 +226,7 @@ impl LStore {
     let mut ukeys = self.updates.iter().collect::<Vec<_>>();
     ukeys.sort();
     let lt_c = lt.clone();
+    let mut prev = None;
     interleaved_ordered::interleave_ordered(
       ki.take_while(move |k| k < &lt_c),
       ukeys.into_iter()
@@ -233,6 +234,11 @@ impl LStore {
         .skip_while(move |(k,_)| *k < &gt)
         .take_while(move |(k,_)| *k < &lt)
         .map(|(key,_)| (*key).clone())
-    )
+    ).filter(move |k| {
+      let cur = Some(k.clone());
+      let res = prev != cur;
+      prev = cur;
+      res
+    })
   }
 }
