@@ -9,7 +9,6 @@ pub const REF_PREFIX: u8 = 2;
 
 use std::collections::{HashMap,HashSet};
 use async_std::{prelude::*,sync::{Arc,Mutex},io};
-use desert::FromBytesLE;
 
 use leveldb::iterator::{Iterable,LevelDBIterator};
 use leveldb::options::ReadOptions;
@@ -156,6 +155,7 @@ impl Ingest {
           // not the job of this ingest script to verify changeset integrity
           if let Some(pt) = self.get_point(ex_id).await? {
             let mut estore = self.estore.lock().await;
+            //eprintln!["RM {} {:?}", ex_id, &pt];
             estore.delete(pt, ex_id).await?;
           }
           let mut lstore = self.lstore.lock().await;
@@ -206,7 +206,10 @@ impl Ingest {
                 prev_points.push(p);
               }
             }
-            {
+            if way.feature_type == self.place_other {
+              let mut estore = self.estore.lock().await;
+              estore.push_delete(prev_point.clone(), way.id*3+1);
+            } else {
               let mut estore = self.estore.lock().await;
               estore.push_update(prev_point, &new_point, &encoded.into());
             }
@@ -224,7 +227,10 @@ impl Ingest {
                 prev_points.push(p);
               }
             }
-            {
+            if relation.feature_type == self.place_other {
+              let mut estore = self.estore.lock().await;
+              estore.push_delete(prev_point.clone(), relation.id*3+2);
+            } else {
               let mut estore = self.estore.lock().await;
               estore.push_update(prev_point, &new_point, &encoded.into());
             }
@@ -265,21 +271,24 @@ impl Ingest {
     Ok(match ex_id%3 {
       0 => {
         let mut lstore = self.lstore.lock().await;
-        if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
-          let mut offset = 0;
-          let (s,lon) = f32::from_bytes_le(&buf[offset..])?;
-          offset += s;
-          let (_s,lat) = f32::from_bytes_le(&buf[offset..])?;
-          Some((eyros::Coord::Scalar(lon),eyros::Coord::Scalar(lat)))
+        let kbuf = id_key(ex_id)?;
+        if let Some(buf) = lstore.get(&Key::from(&kbuf))? {
+          match decode(&kbuf, &buf)? {
+            Decoded::Node(node) => {
+              Some((eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)))
+            },
+            _ => None
+          }
         } else {
           None
         }
       },
-      _ => {
+      n => {
         let refs = self.get_refs(ex_id).await?;
         let mut bbox = None;
         for r in refs.iter() {
-          if let Some(p) = self.get_point(*r).await? {
+          let exr = r*3 + match n { 2 => 1, 1 => 0, _ => 0 };
+          if let Some(p) = self.get_point(exr).await? {
             if let Some(b) = bbox {
               bbox = Some(merge(&b, &p));
             } else {

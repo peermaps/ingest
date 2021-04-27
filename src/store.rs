@@ -90,8 +90,11 @@ impl EStore {
     self.check_flush().await?;
     Ok(())
   }
-  pub async fn delete(&mut self, point: P, id: <V as Value>::Id) -> Result<(),Error> {
+  pub fn push_delete(&mut self, point: P, id: <V as Value>::Id) -> () {
     self.batch.push(eyros::Row::Delete(point,id));
+  }
+  pub async fn delete(&mut self, point: P, id: <V as Value>::Id) -> Result<(),Error> {
+    self.push_delete(point, id);
     self.check_flush().await?;
     Ok(())
   }

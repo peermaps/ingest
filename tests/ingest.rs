@@ -119,7 +119,7 @@ async fn ingest() -> Result<(),Error> {
     assert_eq![
       results,
       vec![
-        ((C::Interval(5.000,5.010),C::Interval(-10.010,-10.000)), Feature::Area(Area {
+        ((C::Interval(4.999,5.010),C::Interval(-10.010,-10.000)), Feature::Area(Area {
           id: 700*3+2,
           feature_type: get_type("natural.water"),
           positions: vec![
