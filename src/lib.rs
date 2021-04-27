@@ -23,6 +23,7 @@ type P = (eyros::Coord<f32>,eyros::Coord<f32>);
 pub struct Ingest {
   pub lstore: Arc<Mutex<LStore>>,
   pub estore: Arc<Mutex<EStore>>,
+  place_other: u64,
 }
 
 impl Ingest {
@@ -30,6 +31,7 @@ impl Ingest {
     Self {
       lstore: Arc::new(Mutex::new(lstore)),
       estore: Arc::new(Mutex::new(estore)),
+      place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
     }
   }
 
@@ -47,7 +49,6 @@ impl Ingest {
   // loop over the db, denormalize the records, georender-pack the data,
   // store into eyros, and write backrefs into leveldb
   pub async fn process(&self) -> Result<(),Error> {
-    let place_other = *georender_pack::osm_types::get_types().get("place.other").unwrap();
     let gt = Key::from(&vec![ID_PREFIX]);
     let lt = Key::from(&vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
     let db = {
@@ -65,15 +66,12 @@ impl Ingest {
       // to save space in the final output
       match decode(&key.data,&value)? {
         Decoded::Node(node) => {
-          if node.feature_type == place_other { continue }
           self.create_node(&node).await?;
         },
         Decoded::Way(way) => {
-          if way.feature_type == place_other { continue }
           self.create_way(&way).await?;
         },
         Decoded::Relation(relation) => {
-          if relation.feature_type == place_other { continue }
           self.create_relation(&relation).await?;
         },
       }
@@ -113,10 +111,10 @@ impl Ingest {
               {
                 let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  lstore.del(Key::from(&backref_key(way.id*3+1, *r)?))?;
+                  lstore.del(Key::from(&backref_key(*r, way.id*3+1)?))?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  lstore.put(Key::from(&backref_key(way.id*3+1,*r)?),&vec![])?;
+                  lstore.put(Key::from(&backref_key(*r, way.id*3+1)?),&vec![])?;
                 }
               }
               Some((false,way.id*3+1))
@@ -137,10 +135,10 @@ impl Ingest {
               {
                 let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  lstore.del(Key::from(&backref_key(relation.id*3+2, *r)?))?;
+                  lstore.del(Key::from(&backref_key(*r, relation.id*3+2)?))?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  lstore.put(Key::from(&backref_key(relation.id*3+2,*r)?),&vec![])?;
+                  lstore.put(Key::from(&backref_key(*r, relation.id*3+2)?),&vec![])?;
                 }
               }
               Some((false,relation.id*3+2))
@@ -163,7 +161,7 @@ impl Ingest {
           let mut lstore = self.lstore.lock().await;
           lstore.del(Key::from(&id_key(ex_id)?))?;
           for r in backrefs.iter() {
-            lstore.del(Key::from(&backref_key(ex_id, *r)?))?;
+            lstore.del(Key::from(&backref_key(*r, ex_id)?))?;
           }
         } else {
           let mut prev_points = Vec::with_capacity(backrefs.len());
@@ -295,6 +293,7 @@ impl Ingest {
   }
 
   async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
+    if node.feature_type == self.place_other { return Ok(()) }
     let encoded = georender_pack::encode::node_from_parsed(
       node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
     )?;
@@ -332,8 +331,10 @@ impl Ingest {
 
   async fn create_way(&self, way: &DecodedWay) -> Result<(),Error> {
     if let Some((point,deps,encoded)) = self.encode_way(way).await? {
-      let mut estore = self.estore.lock().await;
-      estore.create(point, encoded.into()).await?;
+      if way.feature_type != self.place_other {
+        let mut estore = self.estore.lock().await;
+        estore.create(point, encoded.into()).await?;
+      }
       let mut lstore = self.lstore.lock().await;
       for r in deps.keys() {
         // node -> way backref
@@ -345,9 +346,10 @@ impl Ingest {
 
   async fn create_relation(&self, relation: &DecodedRelation) -> Result<(),Error> {
     if let Some((point,deps,encoded)) = self.encode_relation(relation).await? {
-      let mut estore = self.estore.lock().await;
-      estore.create(point, encoded.into()).await?;
-
+      if relation.feature_type != self.place_other {
+        let mut estore = self.estore.lock().await;
+        estore.create(point, encoded.into()).await?;
+      }
       let mut lstore = self.lstore.lock().await;
       for way_id in deps.keys() {
         // way -> relation backref
