@@ -32,3 +32,6 @@ tempfile = "3.2.0"
 [[bench]]
 name = "large_area"
 harness = false
+
+[dev-dependencies]
+earcutr = "0.1.1"

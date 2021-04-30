@@ -148,14 +148,13 @@ impl Ingest {
         _ => None,
       };
       if let Some((is_rm,ex_id)) = m {
-        let backrefs = self.get_backrefs(ex_id).await?;
         if is_rm {
           // delete the record but don't bother dealing with backrefs
           // because the referred-to elements *should* be deleted too.
           // not the job of this ingest script to verify changeset integrity
+          let backrefs = self.get_backrefs(ex_id).await?;
           if let Some(pt) = self.get_point(ex_id).await? {
             let mut estore = self.estore.lock().await;
-            //eprintln!["RM {} {:?}", ex_id, &pt];
             estore.delete(pt, ex_id).await?;
           }
           let mut lstore = self.lstore.lock().await;
@@ -163,7 +162,16 @@ impl Ingest {
           for r in backrefs.iter() {
             lstore.del(Key::from(&backref_key(*r, ex_id)?))?;
           }
+        } else if let Some(prev_pt) = self.get_point(ex_id).await? {
+          if let Some(encoded) = encode_o5m(&dataset)? {
+            let mut lstore = self.lstore.lock().await;
+            lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
+          }
+          // recursively recalculates backrefs
+          self.recalculate(ex_id, &prev_pt).await?;
+          self.estore.lock().await.check_flush().await?;
         } else {
+          let backrefs = self.get_backrefs(ex_id).await?;
           let mut prev_points = Vec::with_capacity(backrefs.len());
           for r in backrefs.iter() {
             if let Some(pt) = self.get_point(*r).await? {
@@ -196,7 +204,15 @@ impl Ingest {
     let res = self.lstore.lock().await.get(&key)?;
     if let Some(buf) = res {
       match decode(&key.data,&buf)? {
-        Decoded::Node(_node) => {}, // nothing to update
+        Decoded::Node(node) => {
+          if let Some((new_point,encoded)) = self.encode_node(&node)? {
+            let mut estore = self.estore.lock().await;
+            estore.push_update(prev_point, &new_point, &encoded.into());
+          } else {
+            let mut estore = self.estore.lock().await;
+            estore.push_delete(prev_point.clone(), ex_id);
+          }
+        },
         Decoded::Way(way) => {
           if let Some((new_point,_deps,encoded)) = self.encode_way(&way).await? {
             let backrefs = self.get_backrefs(ex_id).await?;
@@ -301,13 +317,18 @@ impl Ingest {
     })
   }
 
-  async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
-    if node.feature_type == self.place_other { return Ok(()) }
+  fn encode_node(&self, node: &DecodedNode) -> Result<Option<(P,Vec<u8>)>,Error> {
+    if node.feature_type == self.place_other { return Ok(None) }
     let encoded = georender_pack::encode::node_from_parsed(
       node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
     )?;
-    if !encoded.is_empty() {
-      let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
+    if encoded.is_empty() { return Ok(None) }
+    let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
+    Ok(Some((point,encoded)))
+  }
+
+  async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
+    if let Some((point,encoded)) = self.encode_node(node)? {
       let mut estore = self.estore.lock().await;
       estore.create(point, encoded.into()).await?;
     }

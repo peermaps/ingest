@@ -56,7 +56,8 @@ impl FromBytes for V {
 
 pub struct EStore {
   pub batch_size: usize,
-  pub batch: Vec<eyros::Row<P,V>>,
+  pub batch: Vec<Option<eyros::Row<P,V>>>,
+  pub inserts: HashMap<<V as Value>::Id,usize>,
   pub db: eyros::DB<S,T,P,V>,
   pub sync_interval: usize,
   pub flush_count: usize,
@@ -67,23 +68,31 @@ impl EStore {
     Self {
       batch_size: 10_000,
       batch: Vec::with_capacity(10_000),
+      inserts: HashMap::new(),
       db,
       sync_interval: 10,
       flush_count: 0,
     }
   }
   pub async fn create(&mut self, point: P, value: V) -> Result<(),Error> {
-    self.batch.push(eyros::Row::Insert(point,value));
+    self.inserts.insert(value.get_id(), self.batch.len());
+    self.batch.push(Some(eyros::Row::Insert(point,value)));
     if self.batch.len() >= self.batch_size {
       self.flush().await?;
     }
     Ok(())
   }
   pub fn push_update(&mut self, prev_point: &P, new_point: &P, value: &V) -> () {
-    self.batch.extend_from_slice(&[
-      eyros::Row::Delete(prev_point.clone(), value.get_id()),
-      eyros::Row::Insert(new_point.clone(), value.clone()),
-    ]);
+    let id = value.get_id();
+    if let Some(i) = self.inserts.get(&id) {
+      self.batch[*i] = Some(eyros::Row::Insert(new_point.clone(), value.clone()));
+    } else {
+      self.inserts.insert(id, self.batch.len()+1);
+      self.batch.extend_from_slice(&[
+        Some(eyros::Row::Delete(prev_point.clone(), value.get_id())),
+        Some(eyros::Row::Insert(new_point.clone(), value.clone())),
+      ]);
+    }
   }
   pub async fn update(&mut self, prev_point: &P, new_point: &P, value: &V) -> Result<(),Error> {
     self.push_update(prev_point, new_point, value);
@@ -91,7 +100,16 @@ impl EStore {
     Ok(())
   }
   pub fn push_delete(&mut self, point: P, id: <V as Value>::Id) -> () {
-    self.batch.push(eyros::Row::Delete(point,id));
+    let mut ix = None;
+    if let Some(i) = self.inserts.get(&id) {
+      ix = Some(*i);
+    } else {
+      self.batch.push(Some(eyros::Row::Delete(point,id)));
+    }
+    if let Some(i) = ix {
+      self.batch[i] = None;
+      self.inserts.remove(&id);
+    }
   }
   pub async fn delete(&mut self, point: P, id: <V as Value>::Id) -> Result<(),Error> {
     self.push_delete(point, id);
@@ -106,8 +124,14 @@ impl EStore {
   }
   pub async fn flush(&mut self) -> Result<(),Error> {
     if !self.batch.is_empty() {
-      self.db.batch(&self.batch).await?;
+      self.db.batch(&self.batch
+        .iter()
+        .filter(|row| row.is_some())
+        .map(|row| row.as_ref().unwrap().clone())
+        .collect::<Vec<_>>()
+      ).await?;
       self.batch.clear();
+      self.inserts.clear();
       self.flush_count += 1;
       if self.flush_count >= self.sync_interval {
         self.sync().await?;

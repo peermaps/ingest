@@ -2,7 +2,7 @@ use peermaps_ingest::{Ingest,Key,EStore,LStore};
 use leveldb::{database::Database,options::Options};
 use async_std::{prelude::*,fs::File};
 use tempfile::Builder as Tmpfile;
-use eyros::Coord as C;
+use eyros::{Coord as C};
 use georender_pack::{Feature,Point,Area};
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
@@ -24,9 +24,7 @@ async fn ingest() -> Result<(),Error> {
     LStore::new(open(std::path::Path::new(&ldb_dir))?),
     EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?)
   );
-  eprintln!["load_pbf"];
   ingest.load_pbf(pbf_file.to_str().unwrap()).await?;
-  eprintln!["process"];
   ingest.process().await?;
 
   {
@@ -53,14 +51,17 @@ async fn ingest() -> Result<(),Error> {
         (false,false) => std::cmp::Ordering::Equal,
       }
     });
+    let ex_positions = vec![ 13.00,37.00, 13.01,37.01, 13.02,37.00 ];
+    let ex_cells = earcutr::earcut(&ex_positions.iter()
+      .map(|p| *p as f64).collect(), &vec![], 2);
     assert_eq![
       results,
       vec![
         ((C::Interval(13.00,13.02),C::Interval(37.00,37.01)), Feature::Area(Area {
           id: 555*3+1,
           feature_type: get_type("leisure.park"),
-          positions: vec![ 13.00,37.00, 13.01,37.01, 13.02,37.00 ],
-          cells: vec![1,0,2],
+          positions: ex_positions,
+          cells: ex_cells,
           labels: "\x0e=triangle park\x00".as_bytes().to_vec(),
         })),
         ((C::Interval(5.000,5.010),C::Interval(-10.010,-10.000)), Feature::Area(Area {
@@ -89,7 +90,6 @@ async fn ingest() -> Result<(),Error> {
     ];
   }
 
-  eprintln!["changeset"];
   ingest.changeset(Box::new(File::open(&o5c_file).await?)).await?;
 
   {
@@ -116,17 +116,20 @@ async fn ingest() -> Result<(),Error> {
         (false,false) => std::cmp::Ordering::Equal,
       }
     });
+    let ex_positions = vec![
+      4.999,  -9.999, 5.000, -10.010, 5.010, -10.010, 5.001, -10.001,
+      5.005, -10.003, 5.006, -10.004, 5.007, -10.003,
+    ];
+    let ex_cells = earcutr::earcut(&ex_positions.iter()
+      .map(|p| *p as f64).collect(), &vec![4], 2);
     assert_eq![
       results,
       vec![
-        ((C::Interval(4.999,5.010),C::Interval(-10.010,-10.000)), Feature::Area(Area {
+        ((C::Interval(4.999,5.010),C::Interval(-10.010,-9.999)), Feature::Area(Area {
           id: 700*3+2,
           feature_type: get_type("natural.water"),
-          positions: vec![
-            4.999,  -9.999, 5.000, -10.010, 5.010, -10.010, 5.001, -10.001,
-            5.005, -10.003, 5.006, -10.004, 5.007, -10.003,
-          ],
-          cells: vec![0,1,4,5,4,1,3,0,4,6,5,1,3,4,6,6,1,2,2,3,6],
+          positions: ex_positions,
+          cells: ex_cells, // vec![0, 4, 6, 1, 2, 3, 1, 3, 0, 5, 4, 0],
           labels: "\x0a=cool lake\x00".as_bytes().to_vec(),
         })),
         ((C::Scalar(13.02),C::Scalar(37.00)), Feature::Point(Point {
