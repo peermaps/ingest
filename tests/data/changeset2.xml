@@ -1,0 +1,20 @@
+<osmChange version="0.6">
+  <delete>
+    <node id="9103" />
+  </delete>
+  <create>
+    <node id="9104" lon="5.003" lat="-10.008">
+      <tag k="amenity" v="boat_rental" />
+    </node>
+  </create>
+  <modify>
+    <way id="602">
+      <nd ref="9100" />
+      <nd ref="9101" />
+      <nd ref="9102" />
+      <nd ref="9104" />
+      <nd ref="9100" />
+      <tag k="place" v="island" />
+    </way>
+  </modify>
+</osmChange>

@@ -11,7 +11,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 eyros = "4.0.0"
-#georender-pack = "2.0.0"
 georender-pack = { path = "../georender-pack.rs" }
 desert = "1.0.3"
 osmpbf = "0.2.4"
@@ -27,7 +26,6 @@ o5m-stream = { path = "../o5m-stream.rs" }
 lru = "0.6.5"
 interleaved-ordered = "0.1.1"
 async-recursion = "0.3.2"
-tempfile = "3.2.0"
 
 [[bench]]
 name = "large_area"
@@ -35,3 +33,5 @@ harness = false
 
 [dev-dependencies]
 earcutr = "0.1.1"
+pretty_assertions = "0.7.1"
+tempfile = "3.2.0"
