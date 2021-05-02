@@ -110,10 +110,10 @@ impl Ingest {
               {
                 let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  lstore.del(Key::from(&backref_key(*r, way.id*3+1)?))?;
+                  lstore.del(Key::from(&backref_key(*r*3+0, way.id*3+1)?))?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  lstore.put(Key::from(&backref_key(*r, way.id*3+1)?),&vec![])?;
+                  lstore.put(Key::from(&backref_key(*r*3+0, way.id*3+1)?),&vec![])?;
                 }
               }
               Some((false,way.id*3+1))
@@ -134,10 +134,10 @@ impl Ingest {
               {
                 let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  lstore.del(Key::from(&backref_key(*r, relation.id*3+2)?))?;
+                  lstore.del(Key::from(&backref_key(*r*3+1, relation.id*3+2)?))?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  lstore.put(Key::from(&backref_key(*r, relation.id*3+2)?),&vec![])?;
+                  lstore.put(Key::from(&backref_key(*r*3+1, relation.id*3+2)?),&vec![])?;
                 }
               }
               Some((false,relation.id*3+2))
