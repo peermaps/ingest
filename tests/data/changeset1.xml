@@ -1,0 +1,26 @@
+<osmChange version="0.6">
+  <create>
+    <node id="9100" lon="5.004" lat="-10.006" />
+    <node id="9101" lon="5.005" lat="-10.006" />
+    <node id="9102" lon="5.005" lat="-10.007" />
+    <node id="9103" lon="5.004" lat="-10.007" />
+    <way id="602">
+      <nd ref="9100" />
+      <nd ref="9101" />
+      <nd ref="9102" />
+      <nd ref="9103" />
+      <nd ref="9100" />
+      <tag k="place" v="island" />
+    </way>
+  </create>
+  <modify>
+    <relation id="700">
+      <member type="way" role="outer" ref="600" />
+      <member type="way" role="inner" ref="601" />
+      <member type="way" role="inner" ref="602" />
+      <tag k="type" v="multipolygon" />
+      <tag k="natural" v="water" />
+      <tag k="name" v="Cool Lake" />
+    </relation>
+  </modify>
+</osmChange>
