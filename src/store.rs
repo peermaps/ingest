@@ -74,12 +74,13 @@ impl EStore {
       flush_count: 0,
     }
   }
-  pub async fn create(&mut self, point: P, value: V) -> Result<(),Error> {
+  pub fn push_create(&mut self, point: P, value: V) -> () {
     self.inserts.insert(value.get_id(), self.batch.len());
     self.batch.push(Some(eyros::Row::Insert(point,value)));
-    if self.batch.len() >= self.batch_size {
-      self.flush().await?;
-    }
+  }
+  pub async fn create(&mut self, point: P, value: V) -> Result<(),Error> {
+    self.push_create(point, value);
+    self.check_flush().await?;
     Ok(())
   }
   pub fn push_update(&mut self, prev_point: &P, new_point: &P, value: &V) -> () {

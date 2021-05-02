@@ -162,29 +162,14 @@ impl Ingest {
           for r in backrefs.iter() {
             lstore.del(Key::from(&backref_key(*r, ex_id)?))?;
           }
-        } else if let Some(prev_pt) = self.get_point(ex_id).await? {
+        } else {
+          let prev_pt = self.get_point(ex_id).await?;
           if let Some(encoded) = encode_o5m(&dataset)? {
             let mut lstore = self.lstore.lock().await;
             lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
           }
           // recursively recalculates backrefs
           self.recalculate(ex_id, &prev_pt).await?;
-          self.estore.lock().await.check_flush().await?;
-        } else {
-          let backrefs = self.get_backrefs(ex_id).await?;
-          let mut prev_points = Vec::with_capacity(backrefs.len());
-          for r in backrefs.iter() {
-            if let Some(pt) = self.get_point(*r).await? {
-              prev_points.push(pt);
-            }
-          }
-          if let Some(encoded) = encode_o5m(&dataset)? {
-            let mut lstore = self.lstore.lock().await;
-            lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
-          }
-          for (r,prev_point) in backrefs.iter().zip(prev_points.iter()) {
-            self.recalculate(*r, prev_point).await?;
-          }
           self.estore.lock().await.check_flush().await?;
         }
       }
@@ -199,7 +184,7 @@ impl Ingest {
 
   // call this when one of a record's dependants changes
   #[async_recursion::async_recursion]
-  async fn recalculate(&self, ex_id: u64, prev_point: &P) -> Result<(),Error> {
+  async fn recalculate(&self, ex_id: u64, prev_point: &Option<P>) -> Result<(),Error> {
     let key = Key::from(&id_key(ex_id)?);
     let res = self.lstore.lock().await.get(&key)?;
     if let Some(buf) = res {
@@ -207,10 +192,14 @@ impl Ingest {
         Decoded::Node(node) => {
           if let Some((new_point,encoded)) = self.encode_node(&node)? {
             let mut estore = self.estore.lock().await;
-            estore.push_update(prev_point, &new_point, &encoded.into());
-          } else {
+            if let Some(p) = prev_point {
+              estore.push_update(p, &new_point, &encoded.into());
+            } else {
+              estore.push_create(new_point.clone(), encoded.into());
+            }
+          } else if let Some(p) = prev_point {
             let mut estore = self.estore.lock().await;
-            estore.push_delete(prev_point.clone(), ex_id);
+            estore.push_delete(p.clone(), ex_id);
           }
         },
         Decoded::Way(way) => {
@@ -218,16 +207,19 @@ impl Ingest {
             let backrefs = self.get_backrefs(ex_id).await?;
             let mut prev_points = Vec::with_capacity(backrefs.len());
             for r in backrefs.iter() {
-              if let Some(p) = self.get_point(*r).await? {
-                prev_points.push(p);
-              }
+              prev_points.push(self.get_point(*r).await?);
             }
             if way.feature_type == self.place_other {
               let mut estore = self.estore.lock().await;
-              estore.push_delete(prev_point.clone(), way.id*3+1);
+              if let Some(p) = prev_point {
+                estore.push_delete(p.clone(), way.id*3+1);
+              }
+            } else if let Some(p) = prev_point {
+              let mut estore = self.estore.lock().await;
+              estore.push_update(p, &new_point, &encoded.into());
             } else {
               let mut estore = self.estore.lock().await;
-              estore.push_update(prev_point, &new_point, &encoded.into());
+              estore.push_create(new_point.clone(), encoded.into());
             }
             for (r,p) in backrefs.iter().zip(prev_points.iter()) {
               self.recalculate(*r, p).await?;
@@ -239,16 +231,19 @@ impl Ingest {
             let backrefs = self.get_backrefs(ex_id).await?;
             let mut prev_points = Vec::with_capacity(backrefs.len());
             for r in backrefs.iter() {
-              if let Some(p) = self.get_point(*r).await? {
-                prev_points.push(p);
-              }
+              prev_points.push(self.get_point(*r).await?);
             }
             if relation.feature_type == self.place_other {
               let mut estore = self.estore.lock().await;
-              estore.push_delete(prev_point.clone(), relation.id*3+2);
+              if let Some(p) = prev_point {
+                estore.push_delete(p.clone(), relation.id*3+2);
+              }
+            } else if let Some(p) = prev_point {
+              let mut estore = self.estore.lock().await;
+              estore.push_update(p, &new_point, &encoded.into());
             } else {
               let mut estore = self.estore.lock().await;
-              estore.push_update(prev_point, &new_point, &encoded.into());
+              estore.push_create(new_point.clone(), encoded.into());
             }
             for (r,p) in backrefs.iter().zip(prev_points.iter()) {
               self.recalculate(*r, p).await?;
@@ -461,6 +456,7 @@ impl Ingest {
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
     for m in iter {
+      key_data[1..].fill(0);
       let s = varint::encode(m*3+1,&mut key_data[1..])?;
       let key = Key::from(&key_data[0..1+s]);
       let res = {

@@ -1,13 +1,16 @@
-all: ingest.pbf changeset.o5c node.pbf way.pbf relation.pbf
+all: ingest.pbf changeset0.o5c changeset1.o5c node.pbf way.pbf relation.pbf
 
 clean:
-	rm ingest.pbf changeset.o5c node.pbf way.pbf relation.pbf
+	rm ingest.pbf changeset0.o5c changeset1.o5c node.pbf way.pbf relation.pbf
 
 ingest.pbf: ingest.xml
 	osmconvert ingest.xml --out-pbf > ingest.pbf
 
-changeset.o5c: changeset.xml
-	osmconvert changeset.xml --out-o5c > changeset.o5c
+changeset0.o5c: changeset0.xml
+	osmconvert changeset0.xml --out-o5c > changeset0.o5c
+
+changeset1.o5c: changeset1.xml
+	osmconvert changeset1.xml --out-o5c > changeset1.o5c
 
 node.pbf: node.xml
 	osmconvert node.xml --out-pbf > node.pbf
