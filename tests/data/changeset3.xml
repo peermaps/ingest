@@ -1,0 +1,39 @@
+<osmChange version="0.6">
+  <create>
+    <node id="3001" lon="7.000" lat="15.000" />
+    <node id="3002" lon="7.010" lat="15.010" />
+    <node id="3003" lon="7.000" lat="15.020" />
+    <node id="3011" lon="7.002" lat="15.002" />
+    <node id="3012" lon="7.008" lat="15.010" />
+    <node id="3013" lon="7.002" lat="15.018" />
+    <node id="3021" lon="6.998" lat="14.998" />
+    <node id="3022" lon="7.012" lat="15.010" />
+    <node id="3023" lon="6.998" lat="15.022" />
+    <way id="4000">
+      <nd ref="3001" />
+      <nd ref="3002" />
+    </way>
+    <way id="4001">
+      <nd ref="3003" />
+      <nd ref="3001" />
+    </way>
+    <way id="4002">
+      <nd ref="3011" />
+      <nd ref="3012" />
+      <nd ref="3013" />
+      <nd ref="3011" />
+    </way>
+    <way id="4003">
+      <nd ref="3021" />
+      <nd ref="3022" />
+      <nd ref="3023" />
+      <tag k="historic" v="castle_wall" />
+    </way>
+    <relation id="4004">
+      <member type="way" role="outer" ref="4000" />
+      <member type="way" role="outer" ref="4001" />
+      <member type="way" role="inner" ref="4002" />
+      <tag k="historic" v="castle" />
+    </relation>
+  </create>
+</osmChange>
