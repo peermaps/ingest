@@ -33,6 +33,7 @@
       <member type="way" role="outer" ref="4000" />
       <member type="way" role="outer" ref="4001" />
       <member type="way" role="inner" ref="4002" />
+      <tag k="type" v="multipolygon" />
       <tag k="historic" v="castle" />
     </relation>
   </create>
