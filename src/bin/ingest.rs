@@ -9,66 +9,78 @@ async fn main() -> Result<(),Error> {
   let (args,argv) = argmap::new()
     .booleans(&["help","h"])
     .parse(std::env::args());
-  let cmd = &args[1];
-  if cmd == "help" || argv.contains_key("help") || argv.contains_key("h") {
+  if argv.contains_key("help") || argv.contains_key("h") {
     print!["{}", usage(&args)];
-  } else if cmd == "ingest" {
-    let pbf_file = argv.get("pbf").and_then(|x| x.first());
-    let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-    let edb_dir = argv.get("edb").and_then(|x| x.first());
-    if pbf_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
-      print!["{}", usage(&args)];
+    return Ok(());
+  }
+  match args.get(1).map(|x| x.as_str()) {
+    None => print!["{}", usage(&args)],
+    Some("help") => print!["{}", usage(&args)],
+    Some("ingest") => {
+      let pbf_file = argv.get("pbf").and_then(|x| x.first());
+      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
+      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      if pbf_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
+        print!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let ingest = Ingest::new(
+        LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
+        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+      );
+      ingest.load_pbf(pbf_file.unwrap()).await?;
+      ingest.process().await?;
+    },
+    Some("phase0") => {
+      let pbf_file = argv.get("pbf").and_then(|x| x.first());
+      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
+      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      if pbf_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
+        eprint!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let ingest = Ingest::new(
+        LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
+        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+      );
+      ingest.load_pbf(pbf_file.unwrap()).await?;
+      ingest.process().await?;
+    },
+    Some("phase1") => {
+      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
+      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      if ldb_dir.is_none() || edb_dir.is_none() {
+        eprint!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let ingest = Ingest::new(
+        LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
+        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+      );
+      ingest.process().await?;
+    },
+    Some("changeset") => {
+      let o5c_file = argv.get("o5c").and_then(|x| x.first());
+      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
+      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      if o5c_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
+        eprint!["{}",usage(&args)];
+        std::process::exit(1);
+      }
+      let mut ingest = Ingest::new(
+        LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
+        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+      );
+      let o5c_stream: Box<dyn io::Read+Unpin> = match o5c_file.unwrap().as_str() {
+        "-" => Box::new(io::stdin()),
+        x => Box::new(File::open(x).await?),
+      };
+      ingest.changeset(o5c_stream).await?;
+    },
+    Some(cmd) => {
+      eprint!["unrecognized command {}", cmd];
       std::process::exit(1);
-    }
-    let ingest = Ingest::new(
-      LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-      EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-    );
-    ingest.load_pbf(pbf_file.unwrap()).await?;
-    ingest.process().await?;
-  } else if cmd == "phase0" {
-    let pbf_file = argv.get("pbf").and_then(|x| x.first());
-    let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-    let edb_dir = argv.get("edb").and_then(|x| x.first());
-    if pbf_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
-      eprint!["{}", usage(&args)];
-      std::process::exit(1);
-    }
-    let ingest = Ingest::new(
-      LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-      EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-    );
-    ingest.load_pbf(pbf_file.unwrap()).await?;
-    ingest.process().await?;
-  } else if cmd == "phase1" {
-    let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-    let edb_dir = argv.get("edb").and_then(|x| x.first());
-    if ldb_dir.is_none() || edb_dir.is_none() {
-      eprint!["{}", usage(&args)];
-      std::process::exit(1);
-    }
-    let ingest = Ingest::new(
-      LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-      EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-    );
-    ingest.process().await?;
-  } else if cmd == "changeset" {
-    let o5c_file = argv.get("o5c").and_then(|x| x.first());
-    let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-    let edb_dir = argv.get("edb").and_then(|x| x.first());
-    if o5c_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
-      eprint!["{}",usage(&args)];
-      std::process::exit(1);
-    }
-    let mut ingest = Ingest::new(
-      LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-      EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-    );
-    let o5c_stream: Box<dyn io::Read+Unpin> = match o5c_file.unwrap().as_str() {
-      "-" => Box::new(io::stdin()),
-      x => Box::new(File::open(x).await?),
-    };
-    ingest.changeset(o5c_stream).await?;
+    },
   }
   Ok(())
 }
