@@ -1,3 +1,4 @@
+#![feature(backtrace)]
 use peermaps_ingest::{Ingest,Key,EStore,LStore};
 use leveldb::{database::Database,options::Options};
 use async_std::{io,fs::File};
@@ -6,6 +7,19 @@ type Error = Box<dyn std::error::Error+Send+Sync>;
 
 #[async_std::main]
 async fn main() -> Result<(),Error> {
+  if let Err(err) = run().await {
+    match err.backtrace().map(|bt| (bt,bt.status())) {
+      Some((bt,std::backtrace::BacktraceStatus::Captured)) => {
+        eprint!["{}\n{}", err, bt];
+      },
+      _ => eprintln!["{}", err],
+    }
+    std::process::exit(1);
+  }
+  Ok(())
+}
+
+async fn run() -> Result<(),Error> {
   let (args,argv) = argmap::new()
     .booleans(&["help","h"])
     .parse(std::env::args());
