@@ -31,10 +31,11 @@ async fn run() -> Result<(),Error> {
     None => print!["{}", usage(&args)],
     Some("help") => print!["{}", usage(&args)],
     Some("ingest") => {
-      let pbf_file = argv.get("pbf").and_then(|x| x.first());
+      let stdin_file = "-".to_string();
+      let pbf_file = argv.get("pbf").and_then(|x| x.first()).unwrap_or(&stdin_file);
       let ldb_dir = argv.get("ldb").and_then(|x| x.first());
       let edb_dir = argv.get("edb").and_then(|x| x.first());
-      if pbf_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
+      if ldb_dir.is_none() || edb_dir.is_none() {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
@@ -42,14 +43,19 @@ async fn run() -> Result<(),Error> {
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
       );
-      ingest.load_pbf(pbf_file.unwrap()).await?;
+      let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
+        "-" => Box::new(std::io::stdin()),
+        x => Box::new(std::fs::File::open(x)?),
+      };
+      ingest.load_pbf(pbf_stream).await?;
       ingest.process().await?;
     },
     Some("phase0") => {
-      let pbf_file = argv.get("pbf").and_then(|x| x.first());
+      let stdin_file = "-".to_string();
+      let pbf_file = argv.get("pbf").and_then(|x| x.first()).unwrap_or(&stdin_file);
       let ldb_dir = argv.get("ldb").and_then(|x| x.first());
       let edb_dir = argv.get("edb").and_then(|x| x.first());
-      if pbf_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
+      if ldb_dir.is_none() || edb_dir.is_none() {
         eprint!["{}", usage(&args)];
         std::process::exit(1);
       }
@@ -57,7 +63,11 @@ async fn run() -> Result<(),Error> {
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
       );
-      ingest.load_pbf(pbf_file.unwrap()).await?;
+      let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
+        "-" => Box::new(std::io::stdin()),
+        x => Box::new(std::fs::File::open(x)?),
+      };
+      ingest.load_pbf(pbf_stream).await?;
       ingest.process().await?;
     },
     Some("phase1") => {
@@ -110,12 +120,12 @@ fn usage(args: &[String]) -> String {
   format![indoc::indoc![r#"usage: {} COMMAND {{OPTIONS}}
 
     ingest - runs phases 0 and 1
-      --pbf  osm pbf file to ingest
+      --pbf  osm pbf file to ingest or "-" for stdin (default)
       --ldb  level db dir to write normalized data
       --edb  eyros db dir to write spatial data
 
     phase0 - write normalized data to level db
-      --pbf  osm pbf file to ingest
+      --pbf  osm pbf file to ingest or "-" for stdin (default)
       --ldb  level db dir to write normalized data
       --edb  eyros db dir to write spatial data
 

@@ -35,9 +35,9 @@ impl Ingest {
   }
 
   // write the pbf into leveldb
-  pub async fn load_pbf(&self, pbf_file: &str) -> Result<(),Error> {
+  pub async fn load_pbf<R: std::io::Read+Send>(&self, pbf: R) -> Result<(),Error> {
     let mut lstore = self.lstore.lock().await;
-    osmpbf::ElementReader::from_path(pbf_file)?.for_each(|element| {
+    osmpbf::ElementReader::new(pbf).for_each(|element| {
       let (key,value) = encode_osmpbf(&element).unwrap();
       lstore.put(Key::from(&key), &value).unwrap(); // TODO: should bubble up
     })?;
