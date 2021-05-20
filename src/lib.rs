@@ -1,3 +1,4 @@
+#![feature(async_closure)]
 pub mod encoder;
 pub use encoder::*;
 pub mod store;
@@ -19,10 +20,28 @@ type WayDeps = HashMap<u64,Vec<u64>>;
 
 type P = (eyros::Coord<f32>,eyros::Coord<f32>);
 
+#[derive(Debug,Clone,PartialEq)]
+pub enum Phase {
+  Pbf(),
+  Process(),
+  Changeset(),
+}
+
+impl ToString for Phase {
+  fn to_string(&self) -> String {
+    match self {
+      Phase::Pbf() => "pbf",
+      Phase::Process() => "process",
+      Phase::Changeset() => "changeset",
+    }.to_string()
+  }
+}
+
 pub struct Ingest {
   pub lstore: Arc<Mutex<LStore>>,
   pub estore: Arc<Mutex<EStore>>,
   place_other: u64,
+  reporter: Arc<Mutex<Option<Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>>>>,
 }
 
 impl Ingest {
@@ -31,15 +50,35 @@ impl Ingest {
       lstore: Arc::new(Mutex::new(lstore)),
       estore: Arc::new(Mutex::new(estore)),
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
+      reporter: Arc::new(Mutex::new(None)),
     }
   }
 
+  pub fn reporter(mut self, f: Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>) -> Self {
+    self.reporter = Arc::new(Mutex::new(Some(f)));
+    self
+  }
+
   // write the pbf into leveldb
-  pub async fn load_pbf<R: std::io::Read+Send>(&self, pbf: R) -> Result<(),Error> {
+  pub async fn load_pbf<R: std::io::Read+Send>(&mut self, pbf: R) -> Result<(),Error> {
     let mut lstore = self.lstore.lock().await;
+    let mut reporter = self.reporter.lock().await;
     osmpbf::ElementReader::new(pbf).for_each(|element| {
-      let (key,value) = encode_osmpbf(&element).unwrap();
-      lstore.put(Key::from(&key), &value).unwrap(); // TODO: should bubble up
+      let res = encode_osmpbf(&element);
+      match (res, reporter.as_mut()) {
+        (Err(e),Some(f)) => f(Phase::Pbf(),Err(e.into())),
+        (Err(_),_) => {},
+        (Ok((key,value)),Some(f)) => {
+          if let Err(e) = lstore.put(Key::from(&key), &value) {
+            f(Phase::Pbf(),Err(e.into()));
+          } else {
+            f(Phase::Pbf(),Ok(()));
+          }
+        },
+        (Ok((key,value)),None) => {
+          if let Err(_) = lstore.put(Key::from(&key), &value) {}
+        }
+      }
     })?;
     lstore.flush()?;
     Ok(())
@@ -47,7 +86,7 @@ impl Ingest {
 
   // loop over the db, denormalize the records, georender-pack the data,
   // store into eyros, and write backrefs into leveldb
-  pub async fn process(&self) -> Result<(),Error> {
+  pub async fn process(&mut self) -> () {
     let gt = Key::from(&vec![ID_PREFIX]);
     let lt = Key::from(&vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
     let db = {
@@ -63,28 +102,43 @@ impl Ingest {
       // presumably, if a feature doesn't have distinguishing tags,
       // it could be referred to by other geometry, so skip it
       // to save space in the final output
-      match decode(&key.data,&value)? {
-        Decoded::Node(node) => {
-          self.create_node(&node).await?;
-        },
-        Decoded::Way(way) => {
-          self.create_way(&way).await?;
-        },
-        Decoded::Relation(relation) => {
-          self.create_relation(&relation).await?;
-        },
+      let res = match decode(&key.data,&value) {
+        Err(e) => Err(e.into()),
+        Ok(Decoded::Node(node)) => self.create_node(&node).await,
+        Ok(Decoded::Way(way)) => self.create_way(&way).await,
+        Ok(Decoded::Relation(relation)) => self.create_relation(&relation).await,
+      };
+      if let Some(f) = self.reporter.lock().await.as_mut() {
+        match res {
+          Err(e) => f(Phase::Process(), Err(e.into())),
+          Ok(r) => f(Phase::Process(), Ok(r)),
+        }
       }
     }
     {
       let mut estore = self.estore.lock().await;
-      estore.flush().await?;
-      estore.sync().await?;
+      if let Some(f) = self.reporter.lock().await.as_mut() {
+        if let Err(e) = estore.flush().await {
+          f(Phase::Process(), Err(e.into()));
+        }
+        if let Err(e) = estore.sync().await {
+          f(Phase::Process(), Err(e.into()));
+        }
+      } else {
+        if let Err(_) = estore.flush().await {}
+        if let Err(_) = estore.sync().await {}
+      }
     }
     {
       let mut lstore = self.lstore.lock().await;
-      lstore.flush()?;
+      if let Some(f) = self.reporter.lock().await.as_mut() {
+        if let Err(e) = lstore.flush() {
+          f(Phase::Process(), Err(e.into()));
+        }
+      } else {
+        if let Err(_) = lstore.flush() {}
+      }
     }
-    Ok(())
   }
 
   // import changes from an o5c changeset file

@@ -27,6 +27,7 @@ async fn run() -> Result<(),Error> {
     print!["{}", usage(&args)];
     return Ok(());
   }
+
   match args.get(1).map(|x| x.as_str()) {
     None => print!["{}", usage(&args)],
     Some("help") => print!["{}", usage(&args)],
@@ -39,18 +40,36 @@ async fn run() -> Result<(),Error> {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
-      let ingest = Ingest::new(
+      let mut counter = 0;
+      let mut last_print = std::time::Instant::now();
+      let mut last_phase = None;
+      let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-      );
+      ).reporter(Box::new(move |phase,res| {
+        if let Err(e) = res {
+          eprintln!["{:?}", e];
+        } else {
+          counter += 1;
+          if last_phase.as_ref().and_then(|p| Some(p != &phase)).unwrap_or(false) {
+            eprint!["{} {}\r\n", phase.to_string(), counter];
+            last_print = std::time::Instant::now();
+          }
+          if last_print.elapsed().as_secs_f64() >= 1.0 {
+            eprint!["{} {}\r", phase.to_string(), counter];
+            last_print = std::time::Instant::now();
+          }
+        }
+        last_phase = Some(phase);
+      }));
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
       ingest.load_pbf(pbf_stream).await?;
-      ingest.process().await?;
+      ingest.process().await;
     },
-    Some("phase0") => {
+    Some("pbf") => {
       let stdin_file = "-".to_string();
       let pbf_file = argv.get("pbf").and_then(|x| x.first()).unwrap_or(&stdin_file);
       let ldb_dir = argv.get("ldb").and_then(|x| x.first());
@@ -59,7 +78,7 @@ async fn run() -> Result<(),Error> {
         eprint!["{}", usage(&args)];
         std::process::exit(1);
       }
-      let ingest = Ingest::new(
+      let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
       );
@@ -68,20 +87,20 @@ async fn run() -> Result<(),Error> {
         x => Box::new(std::fs::File::open(x)?),
       };
       ingest.load_pbf(pbf_stream).await?;
-      ingest.process().await?;
+      ingest.process().await;
     },
-    Some("phase1") => {
+    Some("process") => {
       let ldb_dir = argv.get("ldb").and_then(|x| x.first());
       let edb_dir = argv.get("edb").and_then(|x| x.first());
       if ldb_dir.is_none() || edb_dir.is_none() {
         eprint!["{}", usage(&args)];
         std::process::exit(1);
       }
-      let ingest = Ingest::new(
+      let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
       );
-      ingest.process().await?;
+      ingest.process().await;
     },
     Some("changeset") => {
       let o5c_file = argv.get("o5c").and_then(|x| x.first());
@@ -119,17 +138,17 @@ fn open(path: &std::path::Path) -> Result<Database<Key>,Error> {
 fn usage(args: &[String]) -> String {
   format![indoc::indoc![r#"usage: {} COMMAND {{OPTIONS}}
 
-    ingest - runs phases 0 and 1
+    ingest - runs pbf and process phases
       --pbf  osm pbf file to ingest or "-" for stdin (default)
       --ldb  level db dir to write normalized data
       --edb  eyros db dir to write spatial data
 
-    phase0 - write normalized data to level db
+    pbf - parse pbf and write normalized data to level db
       --pbf  osm pbf file to ingest or "-" for stdin (default)
       --ldb  level db dir to write normalized data
       --edb  eyros db dir to write spatial data
 
-    phase1 - write georender-pack data to eyros db
+    process - write georender-pack data to eyros db from populated level db
       --ldb  level db dir to read normalized data
       --edb  eyros db dir to write spatial data
 
