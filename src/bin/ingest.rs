@@ -1,5 +1,5 @@
 #![feature(backtrace)]
-use peermaps_ingest::{Ingest,Key,EStore,LStore};
+use peermaps_ingest::{Ingest,Key,EStore,LStore,Phase};
 use leveldb::{database::Database,options::Options};
 use async_std::{io,fs::File};
 
@@ -28,6 +28,29 @@ async fn run() -> Result<(),Error> {
     return Ok(());
   }
 
+  let mut counter: u64 = 0;
+  let mut last_print = std::time::Instant::now();
+  let mut last_phase: Option<Phase> = None;
+  let reporter = Box::new(move |phase: Phase, res| {
+    if let Err(e) = res {
+      eprintln!["\x1b[1K\r{} error: {}", phase.to_string(), e];
+      last_print = std::time::Instant::now();
+    } else {
+      counter += 1;
+      if last_phase.as_ref().and_then(|p| Some(p != &phase)).unwrap_or(false) {
+        eprintln!["\x1b[1K\r{} {}", last_phase.as_ref().unwrap().to_string(), counter];
+        counter = 1;
+        eprint!["{} {}", phase.to_string(), counter];
+        last_print = std::time::Instant::now();
+      }
+      if last_print.elapsed().as_secs_f64() >= 1.0 {
+        eprint!["\x1b[1K\r{} {}", phase.to_string(), counter];
+        last_print = std::time::Instant::now();
+      }
+    }
+    last_phase = Some(phase);
+  });
+
   match args.get(1).map(|x| x.as_str()) {
     None => print!["{}", usage(&args)],
     Some("help") => print!["{}", usage(&args)],
@@ -40,28 +63,10 @@ async fn run() -> Result<(),Error> {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
-      let mut counter = 0;
-      let mut last_print = std::time::Instant::now();
-      let mut last_phase = None;
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-      ).reporter(Box::new(move |phase,res| {
-        if let Err(e) = res {
-          eprintln!["{:?}", e];
-        } else {
-          counter += 1;
-          if last_phase.as_ref().and_then(|p| Some(p != &phase)).unwrap_or(false) {
-            eprint!["{} {}\r\n", phase.to_string(), counter];
-            last_print = std::time::Instant::now();
-          }
-          if last_print.elapsed().as_secs_f64() >= 1.0 {
-            eprint!["{} {}\r", phase.to_string(), counter];
-            last_print = std::time::Instant::now();
-          }
-        }
-        last_phase = Some(phase);
-      }));
+      ).reporter(reporter);
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
@@ -81,7 +86,7 @@ async fn run() -> Result<(),Error> {
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-      );
+      ).reporter(reporter);
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
@@ -99,7 +104,7 @@ async fn run() -> Result<(),Error> {
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-      );
+      ).reporter(reporter);
       ingest.process().await;
     },
     Some("changeset") => {
@@ -113,7 +118,7 @@ async fn run() -> Result<(),Error> {
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
-      );
+      ).reporter(reporter);
       let o5c_stream: Box<dyn io::Read+Unpin> = match o5c_file.unwrap().as_str() {
         "-" => Box::new(io::stdin()),
         x => Box::new(File::open(x).await?),
