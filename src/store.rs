@@ -37,6 +37,9 @@ impl ToBytes for V {
   fn to_bytes(&self) -> Result<Vec<u8>,Error> {
     self.data.to_bytes()
   }
+  fn write_bytes(&self, buf: &mut [u8]) -> Result<usize,Error> {
+    self.data.write_bytes(buf)
+  }
 }
 impl CountBytes for V {
   fn count_from_bytes(src: &[u8]) -> Result<usize,Error> {
@@ -53,10 +56,17 @@ impl FromBytes for V {
   }
 }
 
+#[derive(Debug,Clone,Hash)]
+pub enum Op {
+  Insert(usize),
+  Update(usize,usize), // delete, insert
+  Delete(usize),
+}
+
 pub struct EStore {
   pub batch_size: usize,
   pub batch: Vec<Option<eyros::Row<P,V>>>,
-  pub inserts: HashMap<<V as Value>::Id,usize>,
+  pub inserts: HashMap<<V as Value>::Id,Op>,
   pub db: eyros::DB<S,T,P,V>,
   pub sync_interval: usize,
   pub flush_count: usize,
@@ -74,7 +84,7 @@ impl EStore {
     }
   }
   pub fn push_create(&mut self, point: P, value: V) -> () {
-    self.inserts.insert(value.get_id(), self.batch.len());
+    self.inserts.insert(value.get_id(), Op::Insert(self.batch.len()));
     self.batch.push(Some(eyros::Row::Insert(point,value)));
   }
   pub async fn create(&mut self, point: P, value: V) -> Result<(),Error> {
@@ -84,14 +94,35 @@ impl EStore {
   }
   pub fn push_update(&mut self, prev_point: &P, new_point: &P, value: &V) -> () {
     let id = value.get_id();
-    if let Some(i) = self.inserts.get(&id) {
-      self.batch[*i] = Some(eyros::Row::Insert(new_point.clone(), value.clone()));
-    } else {
-      self.inserts.insert(id.clone(), self.batch.len()+1);
-      self.batch.extend_from_slice(&[
-        Some(eyros::Row::Delete(prev_point.clone(), id.clone())),
-        Some(eyros::Row::Insert(new_point.clone(), value.clone())),
-      ]);
+    let replace = match self.inserts.get_mut(&id) {
+      Some(Op::Insert(i)) => {
+        // replace existing insert
+        self.batch[*i] = Some(eyros::Row::Insert(new_point.clone(), value.clone()));
+        None
+      },
+      Some(Op::Update(_,i)) => {
+        // replace insert, leaving delete
+        self.batch[*i] = Some(eyros::Row::Insert(new_point.clone(), value.clone()));
+        None
+      },
+      Some(Op::Delete(i)) => {
+        // leave existing delete, push new insert
+        let j = self.batch.len();
+        self.batch[j] = Some(eyros::Row::Insert(new_point.clone(), value.clone()));
+        Some(Op::Update(*i,j))
+      },
+      None => {
+        let i = self.batch.len();
+        let j = i+1;
+        self.batch.extend_from_slice(&[
+          Some(eyros::Row::Delete(prev_point.clone(), id)),
+          Some(eyros::Row::Insert(new_point.clone(), value.clone())),
+        ]);
+        Some(Op::Update(i,j))
+      },
+    };
+    if let Some(v) = replace {
+      self.inserts.insert(id, v);
     }
   }
   pub async fn update(&mut self, prev_point: &P, new_point: &P, value: &V) -> Result<(),Error> {
@@ -100,15 +131,29 @@ impl EStore {
     Ok(())
   }
   pub fn push_delete(&mut self, point: P, id: <V as Value>::Id) -> () {
-    let mut ix = None;
-    if let Some(i) = self.inserts.get(&id) {
-      ix = Some(*i);
-    } else {
-      self.batch.push(Some(eyros::Row::Delete(point,id)));
-    }
-    if let Some(i) = ix {
-      self.batch[i] = None;
+    let (rm,replace) = match self.inserts.get(&id) {
+      Some(Op::Insert(i)) => {
+        self.batch[*i] = None;
+        (true,None)
+      },
+      Some(Op::Update(i,j)) => {
+        self.batch[*j] = None;
+        (false,Some(Op::Delete(*i)))
+      },
+      Some(Op::Delete(_)) => {
+        // no-op to delete again
+        (false,None)
+      },
+      None => {
+        let i = self.batch.len();
+        self.batch.push(Some(eyros::Row::Delete(point,id)));
+        (false,Some(Op::Delete(i)))
+      },
+    };
+    if rm {
       self.inserts.remove(&id);
+    } else if let Some(v) = replace {
+      self.inserts.insert(id, v);
     }
   }
   pub async fn delete(&mut self, point: P, id: <V as Value>::Id) -> Result<(),Error> {
