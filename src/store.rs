@@ -1,9 +1,8 @@
-use crate::varint;
 use leveldb::database::{Database,batch::{Batch,Writebatch}};
 use leveldb::{options::{ReadOptions,WriteOptions},kv::KV};
 use leveldb::iterator::{Iterable,LevelDBIterator};
 use std::collections::HashMap;
-use desert::{ToBytes,FromBytes,CountBytes};
+use desert::{ToBytes,FromBytes,CountBytes,varint};
 use eyros::Value;
 use async_std::sync::Arc;
 
@@ -35,12 +34,12 @@ impl eyros::Value for V {
   }
 }
 impl ToBytes for V {
-  fn to_bytes(&self) -> Result<Vec<u8>,failure::Error> {
+  fn to_bytes(&self) -> Result<Vec<u8>,Error> {
     self.data.to_bytes()
   }
 }
 impl CountBytes for V {
-  fn count_from_bytes(src: &[u8]) -> Result<usize,failure::Error> {
+  fn count_from_bytes(src: &[u8]) -> Result<usize,Error> {
     <Vec<u8>>::count_from_bytes(src)
   }
   fn count_bytes(&self) -> usize {
@@ -48,7 +47,7 @@ impl CountBytes for V {
   }
 }
 impl FromBytes for V {
-  fn from_bytes(src: &[u8]) -> Result<(usize,Self),failure::Error> {
+  fn from_bytes(src: &[u8]) -> Result<(usize,Self),Error> {
     let (size,data) = <Vec<u8>>::from_bytes(src)?;
     Ok((size, Self { data }))
   }
@@ -88,9 +87,9 @@ impl EStore {
     if let Some(i) = self.inserts.get(&id) {
       self.batch[*i] = Some(eyros::Row::Insert(new_point.clone(), value.clone()));
     } else {
-      self.inserts.insert(id, self.batch.len()+1);
+      self.inserts.insert(id.clone(), self.batch.len()+1);
       self.batch.extend_from_slice(&[
-        Some(eyros::Row::Delete(prev_point.clone(), value.get_id())),
+        Some(eyros::Row::Delete(prev_point.clone(), id.clone())),
         Some(eyros::Row::Insert(new_point.clone(), value.clone())),
       ]);
     }

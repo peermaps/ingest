@@ -1,20 +1,21 @@
-#![feature(async_closure)]
+#![feature(async_closure,backtrace)]
 pub mod encoder;
 pub use encoder::*;
 pub mod store;
 pub use store::*;
-pub mod varint;
+pub mod error;
+pub use error::*;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
 use std::collections::{HashMap,HashSet};
 use async_std::{prelude::*,sync::{Arc,Mutex},io};
+use desert::varint;
 
 use leveldb::iterator::{Iterable,LevelDBIterator};
 use leveldb::options::ReadOptions;
 
-type Error = Box<dyn std::error::Error+Send+Sync>;
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
 

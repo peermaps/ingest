@@ -1,7 +1,6 @@
-use desert::{ToBytesBE,FromBytesBE};
-use crate::varint;
+use desert::{ToBytesBE,FromBytesBE,varint};
+use crate::{Error,error::IngestErrorKind as E};
 
-type Error = Box<dyn std::error::Error+Send+Sync>;
 pub const ID_PREFIX: u8 = 0;
 
 #[derive(Debug,Clone,PartialEq)]
@@ -191,9 +190,7 @@ pub fn encode_o5m(dataset: &o5m_stream::Dataset) -> Result<Option<Vec<u8>>,Error
 }
 
 pub fn decode(key: &[u8], value: &[u8]) -> Result<Decoded,Error> {
-  if key[0] != ID_PREFIX {
-    return Err(Box::new(failure::err_msg("attempted to decode a non-ID key").compat()));
-  }
+  if key[0] != ID_PREFIX { E::NonIdKey { prefix: key[0] }.raise()? }
   let (_,ex_id) = varint::decode(&key[1..])?;
   let id = ex_id/3;
   Ok(match ex_id%3 {

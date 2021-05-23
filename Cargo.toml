@@ -9,20 +9,23 @@ repository = "https://github.com/peermaps/ingest"
 documentation = "https://docs.rs/ingest"
 license = "MIT OR Apache-2.0"
 
+[[bin]]
+name = "peermaps-ingest"
+path = "src/bin/ingest.rs"
+
 [dependencies]
-eyros = "4.0.0"
+eyros = "4.0.1"
 georender-pack = { path = "../georender-pack.rs" }
-desert = "1.0.3"
+desert = "2.0.0"
 osmpbf = "0.2.4"
 async-trait = "0.1.48"
 async-std = "1.9.0"
 leveldb = "0.8.6"
-failure = "0.1.8"
 db-key = "0.0.5"
 leveldb-sys = "2.0.8"
 osm-is-area = "1.0.0"
 random-access-disk = "2.0.0"
-o5m-stream = { path = "../o5m-stream.rs" }
+o5m-stream = "1.1.4"
 lru = "0.6.5"
 interleaved-ordered = "0.1.1"
 async-recursion = "0.3.2"

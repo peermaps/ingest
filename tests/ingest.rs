@@ -23,8 +23,8 @@ async fn ingest() -> Result<(),Error> {
     LStore::new(open(std::path::Path::new(&ldb_dir))?),
     EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?)
   );
-  ingest.load_pbf(pbf_file.to_str().unwrap()).await?;
-  ingest.process().await?;
+  ingest.load_pbf(std::fs::File::open(&pbf_file)?).await?;
+  ingest.process().await;
   {
     let mut estore = ingest.estore.lock().await;
     let mut stream = estore.db.query(&((3.0,-15.0),(15.0,45.0))).await?;
