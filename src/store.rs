@@ -169,11 +169,13 @@ impl EStore {
   }
   pub async fn flush(&mut self) -> Result<(),Error> {
     if !self.batch.is_empty() {
-      self.db.batch(&self.batch
+      let opts = eyros::BatchOptions::new().error_if_missing(false);
+      self.db.batch_with_options(&self.batch
         .iter()
         .filter(|row| row.is_some())
         .map(|row| row.as_ref().unwrap().clone())
-        .collect::<Vec<_>>()
+        .collect::<Vec<_>>(),
+        &opts
       ).await?;
       self.batch.clear();
       self.inserts.clear();
