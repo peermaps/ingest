@@ -17,7 +17,7 @@ async fn ingest() -> Result<(),Error> {
   edb_dir.push("edb");
 
   let mut pbf_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  pbf_file.push("tests/data/ingest.pbf");
+  pbf_file.push("tests/data/0/ingest.pbf");
 
   let mut ingest = Ingest::new(
     LStore::new(open(std::path::Path::new(&ldb_dir))?),
@@ -90,7 +90,7 @@ async fn ingest() -> Result<(),Error> {
 
   {
     let mut o5c_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    o5c_file.push("tests/data/changeset0.o5c");
+    o5c_file.push("tests/data/0/changeset0.o5c");
     ingest.changeset(Box::new(File::open(&o5c_file).await?)).await?;
 
     let mut estore = ingest.estore.lock().await;
@@ -150,7 +150,7 @@ async fn ingest() -> Result<(),Error> {
 
   {
     let mut o5c_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    o5c_file.push("tests/data/changeset1.o5c");
+    o5c_file.push("tests/data/0/changeset1.o5c");
     ingest.changeset(Box::new(File::open(&o5c_file).await?)).await?;
 
     let mut estore = ingest.estore.lock().await;
@@ -223,7 +223,7 @@ async fn ingest() -> Result<(),Error> {
 
   {
     let mut o5c_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    o5c_file.push("tests/data/changeset2.o5c");
+    o5c_file.push("tests/data/0/changeset2.o5c");
     ingest.changeset(Box::new(File::open(&o5c_file).await?)).await?;
 
     let mut estore = ingest.estore.lock().await;
@@ -302,7 +302,7 @@ async fn ingest() -> Result<(),Error> {
 
   {
     let mut o5c_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    o5c_file.push("tests/data/changeset3.o5c");
+    o5c_file.push("tests/data/0/changeset3.o5c");
     ingest.changeset(Box::new(File::open(&o5c_file).await?)).await?;
 
     let mut estore = ingest.estore.lock().await;
