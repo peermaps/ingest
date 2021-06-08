@@ -56,9 +56,10 @@ async fn run() -> Result<(),Error> {
     Some("help") => print!["{}", usage(&args)],
     Some("ingest") => {
       let stdin_file = "-".to_string();
-      let pbf_file = argv.get("pbf").and_then(|x| x.first()).unwrap_or(&stdin_file);
-      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      let pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
+        .and_then(|x| x.first())
+        .unwrap_or(&stdin_file);
+      let (ldb_dir, edb_dir) = get_dirs(&argv);
       if ldb_dir.is_none() || edb_dir.is_none() {
         print!["{}", usage(&args)];
         std::process::exit(1);
@@ -76,9 +77,10 @@ async fn run() -> Result<(),Error> {
     },
     Some("pbf") => {
       let stdin_file = "-".to_string();
-      let pbf_file = argv.get("pbf").and_then(|x| x.first()).unwrap_or(&stdin_file);
-      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      let pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
+        .and_then(|x| x.first())
+        .unwrap_or(&stdin_file);
+      let (ldb_dir, edb_dir) = get_dirs(&argv);
       if ldb_dir.is_none() || edb_dir.is_none() {
         eprint!["{}", usage(&args)];
         std::process::exit(1);
@@ -95,8 +97,7 @@ async fn run() -> Result<(),Error> {
       ingest.process().await;
     },
     Some("process") => {
-      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      let (ldb_dir, edb_dir) = get_dirs(&argv);
       if ldb_dir.is_none() || edb_dir.is_none() {
         eprint!["{}", usage(&args)];
         std::process::exit(1);
@@ -108,9 +109,9 @@ async fn run() -> Result<(),Error> {
       ingest.process().await;
     },
     Some("changeset") => {
-      let o5c_file = argv.get("o5c").and_then(|x| x.first());
-      let ldb_dir = argv.get("ldb").and_then(|x| x.first());
-      let edb_dir = argv.get("edb").and_then(|x| x.first());
+      let o5c_file = argv.get("o5c").or_else(|| argv.get("f"))
+        .and_then(|x| x.first());
+      let (ldb_dir, edb_dir) = get_dirs(&argv);
       if o5c_file.is_none() || ldb_dir.is_none() || edb_dir.is_none() {
         eprint!["{}",usage(&args)];
         std::process::exit(1);
@@ -144,23 +145,47 @@ fn usage(args: &[String]) -> String {
   format![indoc::indoc![r#"usage: {} COMMAND {{OPTIONS}}
 
     ingest - runs pbf and process phases
-      --pbf  osm pbf file to ingest or "-" for stdin (default)
-      --ldb  level db dir to write normalized data
-      --edb  eyros db dir to write spatial data
+      -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+      -l, --ldb     level db dir to write normalized data
+      -e, --edb     eyros db dir to write spatial data
+      -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
 
     pbf - parse pbf and write normalized data to level db
-      --pbf  osm pbf file to ingest or "-" for stdin (default)
-      --ldb  level db dir to write normalized data
-      --edb  eyros db dir to write spatial data
+      -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+      -l, --ldb     level db dir to write normalized data
+      -e, --edb     eyros db dir to write spatial data
+      -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
 
     process - write georender-pack data to eyros db from populated level db
-      --ldb  level db dir to read normalized data
-      --edb  eyros db dir to write spatial data
+      -l, --ldb     level db dir to write normalized data
+      -e, --edb     eyros db dir to write spatial data
+      -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
 
     changeset - ingest data from an o5c changeset
-      --o5c  o5c changeset file or "-" for stdin (default)
-      --ldb  level db dir to read/write normalized data
-      --edb  eyros db dir to write spatial data
+      -f, --o5c     o5c changeset file or "-" for stdin (default)
+      -l, --ldb     level db dir to write normalized data
+      -e, --edb     eyros db dir to write spatial data
+      -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
 
   "#], args.get(0).unwrap_or(&"???".to_string())]
+}
+
+fn get_dirs(argv: &argmap::Map) -> (Option<String>,Option<String>) {
+  let outdir = argv.get("outdir").or_else(|| argv.get("o"))
+    .and_then(|x| x.first());
+  let ldb_dir = argv.get("ldb").or_else(|| argv.get("l"))
+    .and_then(|x| x.first().map(|s| s.clone()))
+    .or_else(|| outdir.and_then(|d: &String| {
+      let mut p = std::path::PathBuf::from(d);
+      p.push("ldb");
+      p.to_str().map(|s| s.to_string())
+    }));
+  let edb_dir = argv.get("edb").or_else(|| argv.get("e"))
+    .and_then(|x| x.first().map(|s| s.clone()))
+    .or_else(|| outdir.and_then(|d: &String| {
+      let mut p = std::path::PathBuf::from(d);
+      p.push("edb");
+      p.to_str().map(|s| s.to_string())
+    }));
+  (ldb_dir,edb_dir)
 }
