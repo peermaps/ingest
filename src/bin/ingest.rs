@@ -29,6 +29,7 @@ async fn run() -> Result<(),Error> {
   }
 
   let mut counter: u64 = 0;
+  let start_time = std::time::Instant::now();
   let mut last_print = std::time::Instant::now();
   let mut last_phase: Option<Phase> = None;
   let reporter = Box::new(move |phase: Phase, res| {
@@ -38,13 +39,15 @@ async fn run() -> Result<(),Error> {
     } else {
       counter += 1;
       if last_phase.as_ref().and_then(|p| Some(p != &phase)).unwrap_or(false) {
-        eprintln!["\x1b[1K\r{} {}", last_phase.as_ref().unwrap().to_string(), counter];
+        eprintln!["\x1b[1K\r[{}] {} {}", hms(start_time.elapsed().as_secs_f64() as u32),
+          last_phase.as_ref().unwrap().to_string(), counter];
         counter = 1;
         eprint!["{} {}", phase.to_string(), counter];
         last_print = std::time::Instant::now();
       }
       if last_print.elapsed().as_secs_f64() >= 1.0 {
-        eprint!["\x1b[1K\r{} {}", phase.to_string(), counter];
+        let elapsed = start_time.elapsed().as_secs_f64() as u32;
+        eprint!["\x1b[1K\r[{}] {} {}", hms(elapsed), phase.to_string(), counter];
         last_print = std::time::Instant::now();
       }
     }
@@ -74,6 +77,7 @@ async fn run() -> Result<(),Error> {
       };
       ingest.load_pbf(pbf_stream).await?;
       ingest.process().await;
+      eprint![""];
     },
     Some("pbf") => {
       let stdin_file = "-".to_string();
@@ -95,6 +99,7 @@ async fn run() -> Result<(),Error> {
       };
       ingest.load_pbf(pbf_stream).await?;
       ingest.process().await;
+      eprint![""];
     },
     Some("process") => {
       let (ldb_dir, edb_dir) = get_dirs(&argv);
@@ -107,6 +112,7 @@ async fn run() -> Result<(),Error> {
         EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
       ingest.process().await;
+      eprint![""];
     },
     Some("changeset") => {
       let o5c_file = argv.get("o5c").or_else(|| argv.get("f"))
@@ -125,6 +131,7 @@ async fn run() -> Result<(),Error> {
         x => Box::new(File::open(x).await?),
       };
       ingest.changeset(o5c_stream).await?;
+      eprint![""];
     },
     Some(cmd) => {
       eprint!["unrecognized command {}", cmd];
@@ -188,4 +195,11 @@ fn get_dirs(argv: &argmap::Map) -> (Option<String>,Option<String>) {
       p.to_str().map(|s| s.to_string())
     }));
   (ldb_dir,edb_dir)
+}
+
+fn hms(t: u32) -> String {
+  let s = t % 60;
+  let m = (t / 60) % 60;
+  let h = t / 3600;
+  format!["{:02}:{:02}:{:02}", h, m, s]
 }
