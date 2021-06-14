@@ -34,7 +34,8 @@ async fn run() -> Result<(),Error> {
   let mut last_phase: Option<Phase> = None;
   let reporter = Box::new(move |phase: Phase, res| {
     if let Err(e) = res {
-      eprintln!["\x1b[1K\r{} error: {}", phase.to_string(), e];
+      eprintln!["\x1b[1K\r[{}] {} error: {}",
+        hms(start_time.elapsed().as_secs_f64() as u32), phase.to_string(), e];
       last_print = std::time::Instant::now();
     } else {
       counter += 1;
