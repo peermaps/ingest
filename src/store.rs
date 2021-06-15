@@ -11,6 +11,7 @@ type Error = Box<dyn std::error::Error+Send+Sync>;
 type S = random_access_disk::RandomAccessDisk;
 type P = (eyros::Coord<f32>,eyros::Coord<f32>);
 type T = eyros::Tree2<f32,f32,V>;
+pub type EDB = eyros::DB<S,T,P,V>;
 
 #[derive(Debug,Clone,Hash)]
 pub struct V {
@@ -67,7 +68,7 @@ pub struct EStore {
   pub batch_size: usize,
   pub batch: Vec<Option<eyros::Row<P,V>>>,
   pub inserts: HashMap<<V as Value>::Id,Op>,
-  pub db: eyros::DB<S,T,P,V>,
+  pub db: EDB,
   pub sync_interval: usize,
   pub flush_count: usize,
 }
@@ -167,9 +168,14 @@ impl EStore {
     }
     Ok(())
   }
+  pub async fn optimize(&mut self, rebuild_depth: usize) -> Result<(),Error> {
+    self.db.optimize(rebuild_depth).await
+  }
   pub async fn flush(&mut self) -> Result<(),Error> {
     if !self.batch.is_empty() {
-      let opts = eyros::BatchOptions::new().error_if_missing(false);
+      let opts = eyros::BatchOptions::new()
+        .error_if_missing(false)
+        .rebuild_depth(4);
       self.db.batch_with_options(&self.batch
         .iter()
         .filter(|row| row.is_some())

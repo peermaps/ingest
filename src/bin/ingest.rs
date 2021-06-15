@@ -1,5 +1,5 @@
 #![feature(backtrace)]
-use peermaps_ingest::{Ingest,Key,EStore,LStore,Phase};
+use peermaps_ingest::{Ingest,Key,EStore,LStore,Phase,EDB};
 use leveldb::{database::Database,options::Options};
 use async_std::{io,fs::File};
 
@@ -70,7 +70,7 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+        EStore::new(open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
@@ -92,7 +92,7 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+        EStore::new(open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
@@ -110,7 +110,7 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+        EStore::new(open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
       ingest.process().await;
       eprint![""];
@@ -125,7 +125,7 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
-        EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir.unwrap())).await?)
+        EStore::new(open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
       let o5c_stream: Box<dyn io::Read+Unpin> = match o5c_file.unwrap().as_str() {
         "-" => Box::new(io::stdin()),
@@ -147,6 +147,11 @@ fn open(path: &std::path::Path) -> Result<Database<Key>,Error> {
   options.create_if_missing = true;
   options.compression = leveldb_sys::Compression::Snappy;
   Database::open(path, options).map_err(|e| e.into())
+}
+
+async fn open_eyros(file: &std::path::Path) -> Result<EDB,Error> {
+  eyros::Setup::from_path(&std::path::Path::new(&file))
+    .build().await
 }
 
 fn usage(args: &[String]) -> String {

@@ -117,8 +117,12 @@ impl Ingest {
       }
     }
     {
+      let optimize = 6;
       let mut estore = self.estore.lock().await;
       if let Some(f) = self.reporter.lock().await.as_mut() {
+        if let Err(e) = estore.optimize(optimize).await {
+          f(Phase::Process(), Err(e.into()));
+        }
         if let Err(e) = estore.flush().await {
           f(Phase::Process(), Err(e.into()));
         }
@@ -126,6 +130,7 @@ impl Ingest {
           f(Phase::Process(), Err(e.into()));
         }
       } else {
+        if let Err(_) = estore.optimize(optimize).await {}
         if let Err(_) = estore.flush().await {}
         if let Err(_) = estore.sync().await {}
       }
