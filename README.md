@@ -10,7 +10,7 @@ features that can be rendered into an [eyros][] database with payloads in the
 [eyros]: https://github.com/peermaps/eyros
 [georender]: https://github.com/peermaps/docs/blob/master/georender.md
 
-## command-line usage
+# command-line usage
 
 ```
 usage: peermaps-ingest COMMAND {OPTIONS}
@@ -37,5 +37,13 @@ changeset - ingest data from an o5c changeset
   -l, --ldb     level db dir to write normalized data
   -e, --edb     eyros db dir to write spatial data
   -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
+```
+
+# install
+
+To get the command-line program:
+
+```
+cargo install peermaps-ingest
 ```
 
