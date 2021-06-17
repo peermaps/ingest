@@ -291,6 +291,7 @@ impl LStore {
     }
     self.db.write(WriteOptions::new(), &wbatch)?;
     self.batch.clear();
+    self.updates.clear();
     Ok(())
   }
   // does not splice records in from self.updated:
