@@ -14,7 +14,7 @@ name = "peermaps-ingest"
 path = "src/bin/ingest.rs"
 
 [dependencies]
-eyros = "4.2.0"
+eyros = "4.2.1"
 georender-pack = "2.1.1"
 desert = "2.0.0"
 osmpbf = "0.2.4"

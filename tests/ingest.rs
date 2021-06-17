@@ -341,7 +341,7 @@ async fn ingest() -> Result<(),Error> {
     let r_ex_cells = earcutr::earcut(&r_ex_positions.iter()
       .map(|p| *p as f64).collect(), &vec![4,7], 2);
     let c_ex_positions = vec![
-      7.000, 15.020, 7.000, 15.000, 7.010, 15.010,
+      7.010, 15.010, 7.000, 15.000, 7.000, 15.020,
       7.002, 15.002, 7.002, 15.018, 7.008, 15.010,
     ];
     let c_ex_cells = earcutr::earcut(&c_ex_positions.iter()
