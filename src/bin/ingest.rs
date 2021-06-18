@@ -27,6 +27,10 @@ async fn run() -> Result<(),Error> {
     print!["{}", usage(&args)];
     return Ok(());
   }
+  if argv.contains_key("version") || argv.contains_key("v") {
+    println!["{}", get_version()];
+    return Ok(());
+  }
 
   let mut counter: u64 = 0;
   let start_time = std::time::Instant::now();
@@ -58,6 +62,7 @@ async fn run() -> Result<(),Error> {
   match args.get(1).map(|x| x.as_str()) {
     None => print!["{}", usage(&args)],
     Some("help") => print!["{}", usage(&args)],
+    Some("version") => print!["{}", get_version()],
     Some("ingest") => {
       let stdin_file = "-".to_string();
       let pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
@@ -135,7 +140,7 @@ async fn run() -> Result<(),Error> {
       eprint![""];
     },
     Some(cmd) => {
-      eprint!["unrecognized command {}", cmd];
+      eprintln!["unrecognized command {}", cmd];
       std::process::exit(1);
     },
   }
@@ -180,7 +185,15 @@ fn usage(args: &[String]) -> String {
       -e, --edb     eyros db dir to write spatial data
       -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
 
-  "#], args.get(0).unwrap_or(&"???".to_string())]
+    -h, --help     Print this help message
+    -v, --version  Print the version string ({})
+
+  "#], args.get(0).unwrap_or(&"???".to_string()), get_version()]
+}
+
+fn get_version() -> &'static str {
+  const VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
+  VERSION.unwrap_or("unknown")
 }
 
 fn get_dirs(argv: &argmap::Map) -> (Option<String>,Option<String>) {
