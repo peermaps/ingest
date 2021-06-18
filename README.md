@@ -37,6 +37,9 @@ changeset - ingest data from an o5c changeset
   -l, --ldb     level db dir to write normalized data
   -e, --edb     eyros db dir to write spatial data
   -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
+
+-h, --help     Print this help message
+-v, --version  Print the version string
 ```
 
 # install
