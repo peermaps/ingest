@@ -83,7 +83,7 @@ async fn run() -> Result<(),Error> {
       };
       ingest.load_pbf(pbf_stream).await?;
       ingest.process().await;
-      eprint![""];
+      eprintln![""];
     },
     Some("pbf") => {
       let stdin_file = "-".to_string();
@@ -105,7 +105,7 @@ async fn run() -> Result<(),Error> {
       };
       ingest.load_pbf(pbf_stream).await?;
       ingest.process().await;
-      eprint![""];
+      eprintln![""];
     },
     Some("process") => {
       let (ldb_dir, edb_dir) = get_dirs(&argv);
@@ -118,7 +118,7 @@ async fn run() -> Result<(),Error> {
         EStore::new(open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
       ingest.process().await;
-      eprint![""];
+      eprintln![""];
     },
     Some("changeset") => {
       let o5c_file = argv.get("o5c").or_else(|| argv.get("f"))
@@ -137,7 +137,7 @@ async fn run() -> Result<(),Error> {
         x => Box::new(File::open(x).await?),
       };
       ingest.changeset(o5c_stream).await?;
-      eprint![""];
+      eprintln![""];
     },
     Some(cmd) => {
       eprintln!["unrecognized command {}", cmd];
