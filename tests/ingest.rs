@@ -1,5 +1,5 @@
-use peermaps_ingest::{Ingest,Key,EStore,LStore};
-use leveldb::{database::Database,options::Options};
+use peermaps_ingest::{Ingest,EStore,LStore};
+use rocksdb::{DB,Options};
 use async_std::{prelude::*,fs::File};
 use tempfile::Builder as Tmpfile;
 use eyros::{Coord as C};
@@ -401,11 +401,11 @@ async fn ingest() -> Result<(),Error> {
   Ok(())
 }
 
-fn open(path: &std::path::Path) -> Result<Database<Key>,Error> {
-  let mut options = Options::new();
-  options.create_if_missing = true;
-  options.compression = leveldb_sys::Compression::Snappy;
-  Database::open(path, options).map_err(|e| e.into())
+fn open(path: &std::path::Path) -> Result<DB,Error> {
+  let mut options = Options::default();
+  options.create_if_missing(true);
+  options.set_compression_type(rocksdb::DBCompressionType::Snappy);
+  DB::open(&options, path).map_err(|e| e.into())
 }
 
 fn get_type(key: &str) -> u64 {

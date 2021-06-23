@@ -1,6 +1,5 @@
-use leveldb::database::{Database,batch::{Batch,Writebatch}};
-use leveldb::{options::{ReadOptions,WriteOptions},kv::KV};
-use leveldb::iterator::{Iterable,LevelDBIterator};
+use rocksdb::{DBWithThreadMode,SingleThreaded,SnapshotWithThreadMode,
+  WriteBatch,WriteOptions,IteratorMode,Direction};
 use std::collections::HashMap;
 use desert::{ToBytes,FromBytes,CountBytes,varint};
 use eyros::Value;
@@ -201,21 +200,9 @@ impl EStore {
   }
 }
 
-#[derive(Clone,Hash,PartialOrd,PartialEq,Ord,Eq)]
-pub struct Key { pub data: Vec<u8> }
-impl Key {
-  pub fn from(key: &[u8]) -> Self {
-    Key { data: key.to_vec() }
-  }
-}
-impl db_key::Key for Key {
-  fn from_u8(key: &[u8]) -> Self { Key { data: key.into() } }
-  fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T { f(&self.data) }
-}
-
 pub enum LWrite {
-  Put((Key,Vec<u8>)),
-  Del(Key)
+  Put((Vec<u8>,Vec<u8>)),
+  Del(Vec<u8>)
 }
 #[derive(PartialOrd,PartialEq,Ord,Eq)]
 pub enum LUpdate {
@@ -223,103 +210,138 @@ pub enum LUpdate {
   Del()
 }
 
-pub struct LStore {
-  pub batch_size: usize,
-  pub batch: Vec<LWrite>,
-  pub db: Arc<Database<Key>>,
-  pub cache: lru::LruCache<Key,Vec<u8>>,
-  pub updates: HashMap<Key,LUpdate>,
-  pub count: usize,
+macro_rules! impl_lstore {
+  ($LStore:ident, ($($L:tt),*), $DB:ty) => {
+    pub struct $LStore<$($L),*> {
+      pub batch_size: usize,
+      pub batch: Vec<LWrite>,
+      pub db: Arc<$DB>,
+      pub cache: lru::LruCache<Vec<u8>,Vec<u8>>,
+      pub updates: HashMap<Vec<u8>,LUpdate>,
+      pub count: usize,
+    }
+
+    impl<$($L),*> $LStore<$($L),*> {
+      pub fn new(db: $DB) -> Self {
+        Self {
+          batch_size: 10_000,
+          batch: vec![],
+          db: Arc::new(db),
+          cache: lru::LruCache::new(10_000),
+          updates: HashMap::new(),
+          count: 0,
+        }
+      }
+      pub fn new_with_same_db(&self) -> Self {
+        Self {
+          batch_size: 10_000,
+          batch: vec![],
+          db: self.db.clone(),
+          cache: lru::LruCache::new(10_000),
+          updates: HashMap::new(),
+          count: 0,
+        }
+      }
+      pub fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>,Error> {
+        match self.updates.get(key) {
+          Some(LUpdate::Put(res)) => Ok(Some(res.to_vec())),
+          Some(LUpdate::Del()) => Ok(None),
+          None => match self.cache.get(&key.to_vec()) {
+            Some(buf) => Ok(Some(buf.to_vec())),
+            None => {
+              let res = self.db.get(key)?;
+              if let Some(r) = &res {
+                self.cache.put(key.to_vec(), r.clone());
+              }
+              Ok(res)
+            },
+          },
+        }
+      }
+      // does not splice records in from self.updated:
+      pub fn iter(&mut self, lt: &[u8], gt: &[u8]) -> impl Iterator<Item=(Vec<u8>,Vec<u8>)>+'_ {
+        let i = self.db.iterator(IteratorMode::From(gt, Direction::Forward));
+        let lt_b = lt.to_vec().into_boxed_slice();
+        i.take_while(move |(k,_)| *k < lt_b)
+          .map(|(k,v)| (k.to_vec(),v.to_vec()))
+      }
+      pub fn keys_iter(&mut self, lt: Vec<u8>, gt: Vec<u8>) -> impl Iterator<Item=Vec<u8>>+'_ {
+        let i = self.db.iterator(IteratorMode::From(&gt, Direction::Forward));
+        // todo: cache the sorted keys
+        let mut ukeys = self.updates.iter().collect::<Vec<_>>();
+        ukeys.sort();
+        let lt_c = lt.clone();
+        let mut prev = None;
+        interleaved_ordered::interleave_ordered(
+          i.map(|(k,_)| k.to_vec()).take_while(move |k| k < &lt_c),
+          ukeys.into_iter()
+            .filter(|(_,v)| match v { LUpdate::Put(_) => true, _ => false })
+            .skip_while(move |(k,_)| *k < &gt)
+            .take_while(move |(k,_)| *k < &lt)
+            .map(|(key,_)| (*key).clone())
+        ).filter(move |k| {
+          let cur = Some(k.clone());
+          let res = prev != cur;
+          prev = cur;
+          res
+        })
+      }
+    }
+  }
 }
+impl_lstore![LStore, (), DBWithThreadMode<SingleThreaded>];
+impl_lstore![LStoreSnapshot, ('a), SnapshotWithThreadMode<'a,DBWithThreadMode<SingleThreaded>>];
 
 impl LStore {
-  pub fn new(db: Database<Key>) -> Self {
-    Self {
-      batch_size: 10_000,
+  pub fn snapshot(&self) -> LStoreSnapshot {
+    LStoreSnapshot {
+      batch_size: self.batch_size,
       batch: vec![],
-      db: Arc::new(db),
+      db: Arc::new(self.db.snapshot()),
       cache: lru::LruCache::new(10_000),
       updates: HashMap::new(),
       count: 0,
     }
   }
-  pub fn get(&mut self, key: &Key) -> Result<Option<Vec<u8>>,Error> {
-    match self.updates.get(key) {
-      Some(LUpdate::Put(res)) => Ok(Some(res.to_vec())),
-      Some(LUpdate::Del()) => Ok(None),
-      None => match self.cache.get(key) {
-        Some(buf) => Ok(Some(buf.to_vec())),
-        None => {
-          let res = self.db.get(ReadOptions::new(), key.clone())?;
-          if let Some(r) = &res {
-            self.cache.put(key.clone(), r.clone());
-          }
-          Ok(res)
-        },
-      },
-    }
-  }
-  pub fn put(&mut self, key: Key, value: &[u8]) -> Result<(),Error> {
-    self.batch.push(LWrite::Put((key.clone(), value.to_vec())));
-    self.cache.pop(&key);
+  pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(),Error> {
+    self.batch.push(LWrite::Put((key.to_vec(), value.to_vec())));
+    self.cache.pop(&key.to_vec());
     if self.batch_size > 0 && self.batch.len() >= self.batch_size {
       self.flush()?;
     } else {
-      self.updates.insert(key, LUpdate::Put(value.to_vec()));
+      self.updates.insert(key.to_vec(), LUpdate::Put(value.to_vec()));
     }
     self.count += 1;
     Ok(())
   }
-  pub fn del(&mut self, key: Key) -> Result<(),Error> {
-    self.batch.push(LWrite::Del(key.clone()));
-    self.cache.pop(&key);
+  pub fn del(&mut self, key: &[u8]) -> Result<(),Error> {
+    self.batch.push(LWrite::Del(key.to_vec()));
+    self.cache.pop(&key.to_vec());
     if self.batch_size > 0 && self.batch.len() >= self.batch_size {
       self.flush()?;
     } else {
-      self.updates.insert(key, LUpdate::Del());
+      self.updates.insert(key.to_vec(), LUpdate::Del());
     }
     self.count += 1;
     Ok(())
   }
   pub fn flush(&mut self) -> Result<(),Error> {
-    let mut wbatch = Writebatch::new();
-    for b in self.batch.iter() {
-      match b {
-        LWrite::Put((key,value)) => wbatch.put(key.clone(),value),
-        LWrite::Del(key) => wbatch.delete(key.clone()),
+    if !self.batch.is_empty() {
+      let mut wbatch = WriteBatch::default();
+      for b in self.batch.drain(..) {
+        match b {
+          LWrite::Put((key,value)) => wbatch.put(key,value),
+          LWrite::Del(key) => wbatch.delete(key),
+        }
       }
+      self.db.write_opt(wbatch, &WriteOptions::new())?;
+      self.updates.clear();
     }
-    self.db.write(WriteOptions::new(), &wbatch)?;
-    self.batch.clear();
-    self.updates.clear();
     Ok(())
   }
-  // does not splice records in from self.updated:
-  pub fn iter(&mut self, lt: Key, gt: Key) -> impl Iterator<Item=(Key,Vec<u8>)>+'_ {
-    let i = self.db.iter(ReadOptions::new());
-    i.seek(&gt);
-    i.take_while(move |(k,_)| *k < lt)
-  }
-  pub fn keys_iter(&mut self, lt: Key, gt: Key) -> impl Iterator<Item=Key>+'_ {
-    let ki = self.db.keys_iter(ReadOptions::new());
-    ki.seek(&gt);
-    // todo: cache the sorted keys
-    let mut ukeys = self.updates.iter().collect::<Vec<_>>();
-    ukeys.sort();
-    let lt_c = lt.clone();
-    let mut prev = None;
-    interleaved_ordered::interleave_ordered(
-      ki.take_while(move |k| k < &lt_c),
-      ukeys.into_iter()
-        .filter(|(_,v)| match v { LUpdate::Put(_) => true, _ => false })
-        .skip_while(move |(k,_)| *k < &gt)
-        .take_while(move |(k,_)| *k < &lt)
-        .map(|(key,_)| (*key).clone())
-    ).filter(move |k| {
-      let cur = Some(k.clone());
-      let res = prev != cur;
-      prev = cur;
-      res
-    })
+  pub fn sync(&mut self) -> Result<(),Error> {
+    self.flush()?;
+    self.db.flush()?;
+    Ok(())
   }
 }

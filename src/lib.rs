@@ -13,9 +13,6 @@ use std::collections::{HashMap,HashSet};
 use async_std::{prelude::*,sync::{Arc,Mutex},io};
 use desert::varint;
 
-use leveldb::iterator::{Iterable,LevelDBIterator};
-use leveldb::options::ReadOptions;
-
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
 
@@ -39,7 +36,7 @@ impl ToString for Phase {
 }
 
 pub struct Ingest {
-  pub lstore: Arc<Mutex<LStore>>,
+  pub lstore: LStore,
   pub estore: Arc<Mutex<EStore>>,
   place_other: u64,
   reporter: Arc<Mutex<Option<Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>>>>,
@@ -48,7 +45,7 @@ pub struct Ingest {
 impl Ingest {
   pub fn new(lstore: LStore, estore: EStore) -> Self {
     Self {
-      lstore: Arc::new(Mutex::new(lstore)),
+      lstore: lstore,
       estore: Arc::new(Mutex::new(estore)),
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
       reporter: Arc::new(Mutex::new(None)),
@@ -60,9 +57,9 @@ impl Ingest {
     self
   }
 
-  // write the pbf into leveldb
+  // write the pbf into rocksdb
   pub async fn load_pbf<R: std::io::Read+Send>(&mut self, pbf: R) -> Result<(),Error> {
-    let mut lstore = self.lstore.lock().await;
+    let lstore = &mut self.lstore;
     let mut reporter = self.reporter.lock().await;
     osmpbf::ElementReader::new(pbf).for_each(|element| {
       let res = encode_osmpbf(&element);
@@ -70,40 +67,39 @@ impl Ingest {
         (Err(e),Some(f)) => f(Phase::Pbf(),Err(e.into())),
         (Err(_),_) => {},
         (Ok((key,value)),Some(f)) => {
-          if let Err(e) = lstore.put(Key::from(&key), &value) {
+          if let Err(e) = lstore.put(&key, &value) {
             f(Phase::Pbf(),Err(e.into()));
           } else {
             f(Phase::Pbf(),Ok(()));
           }
         },
         (Ok((key,value)),None) => {
-          if let Err(_) = lstore.put(Key::from(&key), &value) {}
+          if let Err(_) = lstore.put(&key, &value) {}
         }
       }
     })?;
-    lstore.flush()?;
+    lstore.sync()?;
     Ok(())
   }
 
   // loop over the db, denormalize the records, georender-pack the data,
-  // store into eyros, and write backrefs into leveldb
+  // store into eyros, and write backrefs into rocksdb
   pub async fn process(&mut self) -> () {
-    let gt = Key::from(&vec![ID_PREFIX]);
-    let lt = Key::from(&vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]);
-    let db = {
-      let lstore = self.lstore.lock().await;
-      lstore.db.clone()
-    };
-    let mut iter = {
-      let i = db.iter(ReadOptions::new());
-      i.seek(&gt);
-      i.take_while(move |(k,_)| *k < lt)
-    };
+    let gt = &vec![ID_PREFIX];
+    let lt = &vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff];
+    //let mut lstore = self.lstore.lock().await;
+    //let mut iter = lstore.iter(lt, gt);
+    let lstore_c = self.lstore.new_with_same_db();
+    let mut snap = lstore_c.snapshot();
+    let mut iter = snap.iter(lt, gt);
     while let Some((key,value)) = iter.next() {
       // presumably, if a feature doesn't have distinguishing tags,
       // it could be referred to by other geometry, so skip it
       // to save space in the final output
-      let res = match decode(&key.data,&value) {
+      //eprintln!["{:?} => {:?}", &key, &value];
+      let d = decode(&key,&value);
+      //let res = match decode(&key,&value) {
+      let res = match d {
         Err(e) => Err(e.into()),
         Ok(Decoded::Node(node)) => self.create_node(&node).await,
         Ok(Decoded::Way(way)) => self.create_way(&way).await,
@@ -136,13 +132,12 @@ impl Ingest {
       }
     }
     {
-      let mut lstore = self.lstore.lock().await;
       if let Some(f) = self.reporter.lock().await.as_mut() {
-        if let Err(e) = lstore.flush() {
+        if let Err(e) = self.lstore.sync() {
           f(Phase::Process(), Err(e.into()));
         }
       } else {
-        if let Err(_) = lstore.flush() {}
+        if let Err(_) = self.lstore.sync() {}
       }
     }
   }
@@ -168,12 +163,11 @@ impl Ingest {
               let prev_set = refs.into_iter().collect::<HashSet<u64>>();
               let new_set = deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
               {
-                let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  lstore.del(Key::from(&backref_key(*r*3+0, way.id*3+1)?))?;
+                  self.lstore.del(&backref_key(*r*3+0, way.id*3+1)?)?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  lstore.put(Key::from(&backref_key(*r*3+0, way.id*3+1)?),&vec![])?;
+                  self.lstore.put(&backref_key(*r*3+0, way.id*3+1)?,&vec![])?;
                 }
               }
               Some((false,way.id*3+1))
@@ -192,12 +186,11 @@ impl Ingest {
               let prev_set = prev_refs.into_iter().collect::<HashSet<u64>>();
               let new_set = way_deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
               {
-                let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  lstore.del(Key::from(&backref_key(*r*3+1, relation.id*3+2)?))?;
+                  self.lstore.del(&backref_key(*r*3+1, relation.id*3+2)?)?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  lstore.put(Key::from(&backref_key(*r*3+1, relation.id*3+2)?),&vec![])?;
+                  self.lstore.put(&backref_key(*r*3+1, relation.id*3+2)?,&vec![])?;
                 }
               }
               Some((false,relation.id*3+2))
@@ -217,16 +210,14 @@ impl Ingest {
             let mut estore = self.estore.lock().await;
             estore.delete(pt, ex_id).await?;
           }
-          let mut lstore = self.lstore.lock().await;
-          lstore.del(Key::from(&id_key(ex_id)?))?;
+          self.lstore.del(&id_key(ex_id)?)?;
           for r in backrefs.iter() {
-            lstore.del(Key::from(&backref_key(*r, ex_id)?))?;
+            self.lstore.del(&backref_key(*r, ex_id)?)?;
           }
         } else {
           let prev_pt = self.get_point(ex_id).await?;
           if let Some(encoded) = encode_o5m(&dataset)? {
-            let mut lstore = self.lstore.lock().await;
-            lstore.put(Key::from(&id_key(ex_id)?), &encoded)?;
+            self.lstore.put(&id_key(ex_id)?, &encoded)?;
           }
           // recursively recalculates backrefs
           self.recalculate(ex_id, &prev_pt).await?;
@@ -234,8 +225,7 @@ impl Ingest {
         }
       }
     }
-    let mut lstore = self.lstore.lock().await;
-    lstore.flush()?;
+    self.lstore.sync()?;
     let mut estore = self.estore.lock().await;
     estore.flush().await?;
     estore.sync().await?;
@@ -244,11 +234,11 @@ impl Ingest {
 
   // call this when one of a record's dependants changes
   #[async_recursion::async_recursion]
-  async fn recalculate(&self, ex_id: u64, prev_point: &Option<P>) -> Result<(),Error> {
-    let key = Key::from(&id_key(ex_id)?);
-    let res = self.lstore.lock().await.get(&key)?;
+  async fn recalculate(&mut self, ex_id: u64, prev_point: &Option<P>) -> Result<(),Error> {
+    let key = id_key(ex_id)?;
+    let res = self.lstore.get(&key)?;
     if let Some(buf) = res {
-      match decode(&key.data,&buf)? {
+      match decode(&key,&buf)? {
         Decoded::Node(node) => {
           if let Some((new_point,encoded)) = self.encode_node(&node)? {
             let mut estore = self.estore.lock().await;
@@ -316,7 +306,7 @@ impl Ingest {
   }
 
   #[async_recursion::async_recursion]
-  async fn get_point(&self, ex_id: u64) -> Result<Option<P>,Error> {
+  async fn get_point(&mut self, ex_id: u64) -> Result<Option<P>,Error> {
     fn merge(a: &P, b: &P) -> P {
       (merge_pt(&a.0,&b.0),merge_pt(&a.1,&b.1))
     }
@@ -341,9 +331,8 @@ impl Ingest {
     }
     Ok(match ex_id%3 {
       0 => {
-        let mut lstore = self.lstore.lock().await;
         let kbuf = id_key(ex_id)?;
-        if let Some(buf) = lstore.get(&Key::from(&kbuf))? {
+        if let Some(buf) = self.lstore.get(&kbuf)? {
           match decode(&kbuf, &buf)? {
             Decoded::Node(node) => {
               Some((eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)))
@@ -390,7 +379,7 @@ impl Ingest {
     Ok(())
   }
 
-  async fn encode_way(&self, way: &DecodedWay) -> Result<Option<(P,NodeDeps,Vec<u8>)>,Error> {
+  async fn encode_way(&mut self, way: &DecodedWay) -> Result<Option<(P,NodeDeps,Vec<u8>)>,Error> {
     let mut deps = HashMap::with_capacity(way.refs.len());
     self.get_way_deps(way.refs.iter(), &mut deps).await?;
     let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
@@ -414,37 +403,35 @@ impl Ingest {
     }
   }
 
-  async fn create_way(&self, way: &DecodedWay) -> Result<(),Error> {
+  async fn create_way(&mut self, way: &DecodedWay) -> Result<(),Error> {
     if let Some((point,deps,encoded)) = self.encode_way(way).await? {
       if way.feature_type != self.place_other {
         let mut estore = self.estore.lock().await;
         estore.create(point, encoded.into()).await?;
       }
-      let mut lstore = self.lstore.lock().await;
       for r in deps.keys() {
         // node -> way backref
-        lstore.put(Key::from(&backref_key(*r*3+0, way.id*3+1)?), &vec![])?;
+        self.lstore.put(&backref_key(*r*3+0, way.id*3+1)?, &vec![])?;
       }
     }
     Ok(())
   }
 
-  async fn create_relation(&self, relation: &DecodedRelation) -> Result<(),Error> {
+  async fn create_relation(&mut self, relation: &DecodedRelation) -> Result<(),Error> {
     if let Some((point,deps,encoded)) = self.encode_relation(relation).await? {
       if relation.feature_type != self.place_other {
         let mut estore = self.estore.lock().await;
         estore.create(point, encoded.into()).await?;
       }
-      let mut lstore = self.lstore.lock().await;
       for way_id in deps.keys() {
         // way -> relation backref
-        lstore.put(Key::from(&backref_key(way_id*3+1,relation.id*3+2)?), &vec![])?;
+        self.lstore.put(&backref_key(way_id*3+1,relation.id*3+2)?, &vec![])?;
       }
     }
     Ok(())
   }
 
-  async fn encode_relation(&self, relation: &DecodedRelation) -> Result<Option<(P,WayDeps,Vec<u8>)>,Error> {
+  async fn encode_relation(&mut self, relation: &DecodedRelation) -> Result<Option<(P,WayDeps,Vec<u8>)>,Error> {
     let mut node_deps = HashMap::new();
     let mut way_deps = HashMap::with_capacity(relation.members.len());
     let refs = relation.members.iter().map(|m| m/2).collect::<Vec<u64>>();
@@ -485,8 +472,7 @@ impl Ingest {
     }
   }
 
-  async fn get_way_deps(&self, iter: impl Iterator<Item=&u64>, deps: &mut NodeDeps) -> Result<(),Error> {
-    let mut lstore = self.lstore.lock().await;
+  async fn get_way_deps(&mut self, iter: impl Iterator<Item=&u64>, deps: &mut NodeDeps) -> Result<(),Error> {
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
     let mut first = None;
@@ -497,9 +483,9 @@ impl Ingest {
         continue;
       }
       let s = varint::encode(r*3+0,&mut key_data[1..])?;
-      let key = Key::from(&key_data[0..1+s]);
-      if let Some(buf) = lstore.get(&key)? {
-        match decode(&key.data,&buf)? {
+      let key = &key_data[0..1+s];
+      if let Some(buf) = self.lstore.get(key)? {
+        match decode(key,&buf)? {
           Decoded::Node(node) => {
             deps.insert(*r,(node.lon,node.lat));
           },
@@ -510,7 +496,7 @@ impl Ingest {
     Ok(())
   }
 
-  async fn get_relation_deps(&self, iter: impl Iterator<Item=&u64>,
+  async fn get_relation_deps(&mut self, iter: impl Iterator<Item=&u64>,
     node_deps: &mut NodeDeps, way_deps: &mut WayDeps
   ) -> Result<(),Error> {
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
@@ -518,13 +504,12 @@ impl Ingest {
     for m in iter {
       key_data[1..].fill(0);
       let s = varint::encode(m*3+1,&mut key_data[1..])?;
-      let key = Key::from(&key_data[0..1+s]);
+      let key = &key_data[0..1+s];
       let res = {
-        let mut lstore = self.lstore.lock().await;
-        lstore.get(&key)?
+        self.lstore.get(&key)?
       };
       if let Some(buf) = res {
-        match decode(&key.data,&buf)? {
+        match decode(key,&buf)? {
           Decoded::Way(way) => {
             way_deps.insert(way.id, way.refs.clone());
             self.get_way_deps(way.refs.iter(), node_deps).await?;
@@ -536,37 +521,35 @@ impl Ingest {
     Ok(())
   }
 
-  async fn get_backrefs(&self, ex_id: u64) -> Result<Vec<u64>,Error> {
-    let mut lstore = self.lstore.lock().await;
+  async fn get_backrefs(&mut self, ex_id: u64) -> Result<Vec<u64>,Error> {
     let ex_id_len = varint::length(ex_id);
-    let gt = Key::from(&{
+    let gt = {
       let mut key = vec![0u8;1+ex_id_len];
       key[0] = BACKREF_PREFIX;
       varint::encode(ex_id, &mut key[1..])?;
       key
-    });
-    let lt = Key::from(&{
+    };
+    let lt = {
       let mut key = vec![0u8;1+ex_id_len+8];
       key[0] = BACKREF_PREFIX;
       let s = varint::encode(ex_id, &mut key[1..])?;
       for i in 0..8 { key[1+s+i] = 0xff }
       key
-    });
+    };
     let mut results = vec![];
-    let mut iter = lstore.keys_iter(lt, gt);
+    let mut iter = self.lstore.keys_iter(lt, gt);
     while let Some(key) = iter.next() {
-      let (_,r_id) = varint::decode(&key.data[1+ex_id_len..])?;
+      let (_,r_id) = varint::decode(&key[1+ex_id_len..])?;
       results.push(r_id);
     }
     Ok(results)
   }
 
-  async fn get_refs(&self, ex_id: u64) -> Result<Vec<u64>,Error> {
-    let mut lstore = self.lstore.lock().await;
+  async fn get_refs(&mut self, ex_id: u64) -> Result<Vec<u64>,Error> {
     Ok(match ex_id%3 {
       0 => vec![], // node
       1 => { // way
-        if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
+        if let Some(buf) = self.lstore.get(&id_key(ex_id)?)? {
           let mut offset = 0;
           let (s,_fta) = varint::decode(&buf[offset..])?;
           offset += s;
@@ -584,7 +567,7 @@ impl Ingest {
         }
       },
       _ => { // relation
-        if let Some(buf) = lstore.get(&Key::from(&id_key(ex_id)?))? {
+        if let Some(buf) = self.lstore.get(&id_key(ex_id)?)? {
           let mut offset = 0;
           let (s,_fta) = varint::decode(&buf[offset..])?;
           offset += s;
