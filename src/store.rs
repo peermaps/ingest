@@ -1,4 +1,4 @@
-use rocksdb::{DBWithThreadMode,SingleThreaded,SnapshotWithThreadMode,
+use rocksdb::{DBWithThreadMode,MultiThreaded,SnapshotWithThreadMode,
   WriteBatch,WriteOptions,IteratorMode,Direction};
 use std::collections::HashMap;
 use desert::{ToBytes,FromBytes,CountBytes,varint};
@@ -161,8 +161,11 @@ impl EStore {
     self.check_flush().await?;
     Ok(())
   }
+  pub fn is_full(&mut self) -> bool {
+    self.batch.len() >= self.batch_size
+  }
   pub async fn check_flush(&mut self) -> Result<(),Error> {
-    if self.batch.len() >= self.batch_size {
+    if self.is_full() {
       self.flush().await?;
     }
     Ok(())
@@ -224,20 +227,20 @@ macro_rules! impl_lstore {
     impl<$($L),*> $LStore<$($L),*> {
       pub fn new(db: $DB) -> Self {
         Self {
-          batch_size: 10_000,
+          batch_size: 100_000,
           batch: vec![],
           db: Arc::new(db),
-          cache: lru::LruCache::new(10_000),
+          cache: lru::LruCache::new(100_000),
           updates: HashMap::new(),
           count: 0,
         }
       }
       pub fn new_with_same_db(&self) -> Self {
         Self {
-          batch_size: 10_000,
+          batch_size: 100_000,
           batch: vec![],
           db: self.db.clone(),
-          cache: lru::LruCache::new(10_000),
+          cache: lru::LruCache::new(100_000),
           updates: HashMap::new(),
           count: 0,
         }
@@ -289,8 +292,8 @@ macro_rules! impl_lstore {
     }
   }
 }
-impl_lstore![LStore, (), DBWithThreadMode<SingleThreaded>];
-impl_lstore![LStoreSnapshot, ('a), SnapshotWithThreadMode<'a,DBWithThreadMode<SingleThreaded>>];
+impl_lstore![LStore, (), DBWithThreadMode<MultiThreaded>];
+impl_lstore![LStoreSnapshot, ('a), SnapshotWithThreadMode<'a,DBWithThreadMode<MultiThreaded>>];
 
 impl LStore {
   pub fn snapshot(&self) -> LStoreSnapshot {

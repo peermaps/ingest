@@ -1,7 +1,9 @@
 #![feature(backtrace)]
 use peermaps_ingest::{Ingest,EStore,LStore,Phase,EDB};
-use rocksdb::{DB,Options};
+use rocksdb::{Options,DBWithThreadMode,MultiThreaded};
 use async_std::{io,fs::File};
+
+type DB = DBWithThreadMode<MultiThreaded>;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
@@ -144,7 +146,7 @@ async fn run() -> Result<(),Error> {
         LStore::new(open(std::path::Path::new(&ldb_dir.unwrap()))?),
         EStore::new(open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?)
       ).reporter(reporter);
-      let o5c_stream: Box<dyn io::Read+Unpin> = match o5c_file.unwrap().as_str() {
+      let o5c_stream: Box<dyn io::Read+Send+Unpin> = match o5c_file.unwrap().as_str() {
         "-" => Box::new(io::stdin()),
         x => Box::new(File::open(x).await?),
       };

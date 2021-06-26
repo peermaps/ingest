@@ -1,3 +1,4 @@
+#![warn(clippy::future_not_send)]
 #![feature(async_closure,backtrace)]
 pub mod encoder;
 pub use encoder::*;
@@ -10,8 +11,9 @@ pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
 use std::collections::{HashMap,HashSet};
-use async_std::{prelude::*,sync::{Arc,Mutex},io};
+use async_std::{prelude::*,sync::{Arc,Mutex},io,task::{spawn,spawn_local},channel::bounded};
 use desert::varint;
+use futures::future::join_all;
 
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
@@ -35,8 +37,9 @@ impl ToString for Phase {
   }
 }
 
+#[derive(Clone)]
 pub struct Ingest {
-  pub lstore: LStore,
+  pub lstore: Arc<Mutex<LStore>>,
   pub estore: Arc<Mutex<EStore>>,
   place_other: u64,
   reporter: Arc<Mutex<Option<Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>>>>,
@@ -45,7 +48,7 @@ pub struct Ingest {
 impl Ingest {
   pub fn new(lstore: LStore, estore: EStore) -> Self {
     Self {
-      lstore: lstore,
+      lstore: Arc::new(Mutex::new(lstore)),
       estore: Arc::new(Mutex::new(estore)),
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
       reporter: Arc::new(Mutex::new(None)),
@@ -59,7 +62,7 @@ impl Ingest {
 
   // write the pbf into rocksdb
   pub async fn load_pbf<R: std::io::Read+Send>(&mut self, pbf: R) -> Result<(),Error> {
-    let lstore = &mut self.lstore;
+    let mut lstore = self.lstore.lock().await;
     let mut reporter = self.reporter.lock().await;
     osmpbf::ElementReader::new(pbf).for_each(|element| {
       let res = encode_osmpbf(&element);
@@ -85,33 +88,86 @@ impl Ingest {
   // loop over the db, denormalize the records, georender-pack the data,
   // store into eyros, and write backrefs into rocksdb
   pub async fn process(&mut self) -> () {
-    let gt = &vec![ID_PREFIX];
-    let lt = &vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff];
-    //let mut lstore = self.lstore.lock().await;
-    //let mut iter = lstore.iter(lt, gt);
-    let lstore_c = self.lstore.new_with_same_db();
-    let mut snap = lstore_c.snapshot();
-    let mut iter = snap.iter(lt, gt);
-    while let Some((key,value)) = iter.next() {
-      // presumably, if a feature doesn't have distinguishing tags,
-      // it could be referred to by other geometry, so skip it
-      // to save space in the final output
-      //eprintln!["{:?} => {:?}", &key, &value];
-      let d = decode(&key,&value);
-      //let res = match decode(&key,&value) {
-      let res = match d {
-        Err(e) => Err(e.into()),
-        Ok(Decoded::Node(node)) => self.create_node(&node).await,
-        Ok(Decoded::Way(way)) => self.create_way(&way).await,
-        Ok(Decoded::Relation(relation)) => self.create_relation(&relation).await,
-      };
-      if let Some(f) = self.reporter.lock().await.as_mut() {
-        match res {
-          Err(e) => f(Phase::Process(), Err(e.into())),
-          Ok(r) => f(Phase::Process(), Ok(r)),
+    let (kv_sender,kv_receiver) = bounded(100);
+    let mut work = vec![];
+
+    let lstore_c = self.lstore.clone();
+    work.push(spawn(async move {
+      let gt = &vec![ID_PREFIX];
+      let lt = &vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff];
+      let mut lstore = lstore_c.lock().await.new_with_same_db();
+      //let mut snap = lstore.snapshot();
+      //let mut iter = snap.iter(lt, gt);
+      let mut iter = lstore.iter(lt, gt);
+      let n = 1_000_000;
+      let mut batch = vec![];
+      while let Some(kv) = iter.next() {
+        batch.push(kv);
+        if batch.len() >= n {
+          kv_sender.send(batch.clone()).await;
+          batch.clear();
         }
       }
+      if !batch.is_empty() {
+        kv_sender.send(batch.clone()).await;
+      }
+      kv_sender.close();
+    }));
+
+    let (eflush_sender,eflush_receiver) = bounded(100);
+    {
+      let nthreads: usize = 50;
+      let ncount = Arc::new(Mutex::new(nthreads));
+      for _ in 0..nthreads {
+        //eprintln!["{:?} => {:?}", &key, &value];
+        let mut this = self.clone();
+        let r = kv_receiver.clone();
+        let es = eflush_sender.clone();
+        let nc = ncount.clone();
+        work.push(spawn_local(async move {
+          loop {
+            if r.is_closed() && r.is_empty() { break }
+            if let Ok(kvs) = r.recv().await {
+              for (key,value) in kvs {
+                let res = match decode(&key,&value) {
+                  Err(e) => Err(e.into()),
+                  Ok(Decoded::Node(node)) => this.create_node(&node).await,
+                  Ok(Decoded::Way(way)) => this.create_way(&way).await,
+                  Ok(Decoded::Relation(relation)) => this.create_relation(&relation).await,
+                };
+                if let Some(f) = this.reporter.lock().await.as_mut() {
+                  match res {
+                    Err(e) => f(Phase::Process(), Err(e.into())),
+                    Ok(r) => f(Phase::Process(), Ok(r)),
+                  }
+                }
+              }
+              es.send(()).await;
+            }
+          }
+          let mut n = nc.lock().await;
+          *n -= 1;
+          if *n == 0 { es.close(); }
+        }));
+      }
     }
+
+    {
+      let estore = self.estore.clone();
+      work.push(spawn_local(async move {
+        while eflush_receiver.recv().await.is_ok() {
+          if eflush_receiver.is_closed() && eflush_receiver.is_empty() { break }
+          let mut e = estore.lock().await;
+          e.check_flush().await;
+        }
+        {
+          let mut e = estore.lock().await;
+          e.check_flush().await;
+        }
+      }));
+    }
+    join_all(work).await;
+
     {
       let optimize = 6;
       let mut estore = self.estore.lock().await;
@@ -133,17 +189,17 @@ impl Ingest {
     }
     {
       if let Some(f) = self.reporter.lock().await.as_mut() {
-        if let Err(e) = self.lstore.sync() {
+        if let Err(e) = self.lstore.lock().await.sync() {
           f(Phase::Process(), Err(e.into()));
         }
       } else {
-        if let Err(_) = self.lstore.sync() {}
+        if let Err(_) = self.lstore.lock().await.sync() {}
       }
     }
   }
 
   // import changes from an o5c changeset file
-  pub async fn changeset(&mut self, infile: Box<dyn io::Read+Unpin>) -> Result<(),Error> {
+  pub async fn changeset(&mut self, infile: Box<dyn io::Read+Send+Unpin>) -> Result<(),Error> {
     let mut stream = o5m_stream::decode(infile);
     while let Some(result) = stream.next().await {
       let dataset = result?;
@@ -163,11 +219,12 @@ impl Ingest {
               let prev_set = refs.into_iter().collect::<HashSet<u64>>();
               let new_set = deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
               {
+                let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  self.lstore.del(&backref_key(*r*3+0, way.id*3+1)?)?;
+                  lstore.del(&backref_key(*r*3+0, way.id*3+1)?)?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  self.lstore.put(&backref_key(*r*3+0, way.id*3+1)?,&vec![])?;
+                  lstore.put(&backref_key(*r*3+0, way.id*3+1)?,&vec![])?;
                 }
               }
               Some((false,way.id*3+1))
@@ -186,11 +243,12 @@ impl Ingest {
               let prev_set = prev_refs.into_iter().collect::<HashSet<u64>>();
               let new_set = way_deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
               {
+                let mut lstore = self.lstore.lock().await;
                 for r in prev_set.difference(&new_set) {
-                  self.lstore.del(&backref_key(*r*3+1, relation.id*3+2)?)?;
+                  lstore.del(&backref_key(*r*3+1, relation.id*3+2)?)?;
                 }
                 for r in new_set.difference(&prev_set) {
-                  self.lstore.put(&backref_key(*r*3+1, relation.id*3+2)?,&vec![])?;
+                  lstore.put(&backref_key(*r*3+1, relation.id*3+2)?,&vec![])?;
                 }
               }
               Some((false,relation.id*3+2))
@@ -210,14 +268,15 @@ impl Ingest {
             let mut estore = self.estore.lock().await;
             estore.delete(pt, ex_id).await?;
           }
-          self.lstore.del(&id_key(ex_id)?)?;
+          let mut lstore = self.lstore.lock().await;
+          lstore.del(&id_key(ex_id)?)?;
           for r in backrefs.iter() {
-            self.lstore.del(&backref_key(*r, ex_id)?)?;
+            lstore.del(&backref_key(*r, ex_id)?)?;
           }
         } else {
           let prev_pt = self.get_point(ex_id).await?;
           if let Some(encoded) = encode_o5m(&dataset)? {
-            self.lstore.put(&id_key(ex_id)?, &encoded)?;
+            self.lstore.lock().await.put(&id_key(ex_id)?, &encoded)?;
           }
           // recursively recalculates backrefs
           self.recalculate(ex_id, &prev_pt).await?;
@@ -225,7 +284,7 @@ impl Ingest {
         }
       }
     }
-    self.lstore.sync()?;
+    self.lstore.lock().await.sync()?;
     let mut estore = self.estore.lock().await;
     estore.flush().await?;
     estore.sync().await?;
@@ -236,7 +295,7 @@ impl Ingest {
   #[async_recursion::async_recursion]
   async fn recalculate(&mut self, ex_id: u64, prev_point: &Option<P>) -> Result<(),Error> {
     let key = id_key(ex_id)?;
-    let res = self.lstore.get(&key)?;
+    let res = self.lstore.lock().await.get(&key)?;
     if let Some(buf) = res {
       match decode(&key,&buf)? {
         Decoded::Node(node) => {
@@ -332,7 +391,7 @@ impl Ingest {
     Ok(match ex_id%3 {
       0 => {
         let kbuf = id_key(ex_id)?;
-        if let Some(buf) = self.lstore.get(&kbuf)? {
+        if let Some(buf) = self.lstore.lock().await.get(&kbuf)? {
           match decode(&kbuf, &buf)? {
             Decoded::Node(node) => {
               Some((eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)))
@@ -374,7 +433,7 @@ impl Ingest {
   async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
     if let Some((point,encoded)) = self.encode_node(node)? {
       let mut estore = self.estore.lock().await;
-      estore.create(point, encoded.into()).await?;
+      estore.push_create(point, encoded.into());
     }
     Ok(())
   }
@@ -407,11 +466,12 @@ impl Ingest {
     if let Some((point,deps,encoded)) = self.encode_way(way).await? {
       if way.feature_type != self.place_other {
         let mut estore = self.estore.lock().await;
-        estore.create(point, encoded.into()).await?;
+        estore.push_create(point, encoded.into());
       }
+      let mut lstore = self.lstore.lock().await;
       for r in deps.keys() {
         // node -> way backref
-        self.lstore.put(&backref_key(*r*3+0, way.id*3+1)?, &vec![])?;
+        lstore.put(&backref_key(*r*3+0, way.id*3+1)?, &vec![])?;
       }
     }
     Ok(())
@@ -421,11 +481,12 @@ impl Ingest {
     if let Some((point,deps,encoded)) = self.encode_relation(relation).await? {
       if relation.feature_type != self.place_other {
         let mut estore = self.estore.lock().await;
-        estore.create(point, encoded.into()).await?;
+        estore.push_create(point, encoded.into());
       }
+      let mut lstore = self.lstore.lock().await;
       for way_id in deps.keys() {
         // way -> relation backref
-        self.lstore.put(&backref_key(way_id*3+1,relation.id*3+2)?, &vec![])?;
+        lstore.put(&backref_key(way_id*3+1,relation.id*3+2)?, &vec![])?;
       }
     }
     Ok(())
@@ -472,7 +533,8 @@ impl Ingest {
     }
   }
 
-  async fn get_way_deps(&mut self, iter: impl Iterator<Item=&u64>, deps: &mut NodeDeps) -> Result<(),Error> {
+  async fn get_way_deps(&mut self, iter: impl Iterator<Item=&u64>+Send, deps: &mut NodeDeps)
+  -> Result<(),Error> {
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
     key_data[0] = ID_PREFIX;
     let mut first = None;
@@ -484,7 +546,7 @@ impl Ingest {
       }
       let s = varint::encode(r*3+0,&mut key_data[1..])?;
       let key = &key_data[0..1+s];
-      if let Some(buf) = self.lstore.get(key)? {
+      if let Some(buf) = self.lstore.lock().await.get(key)? {
         match decode(key,&buf)? {
           Decoded::Node(node) => {
             deps.insert(*r,(node.lon,node.lat));
@@ -496,7 +558,7 @@ impl Ingest {
     Ok(())
   }
 
-  async fn get_relation_deps(&mut self, iter: impl Iterator<Item=&u64>,
+  async fn get_relation_deps(&mut self, iter: impl Iterator<Item=&u64>+Send,
     node_deps: &mut NodeDeps, way_deps: &mut WayDeps
   ) -> Result<(),Error> {
     let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
@@ -505,9 +567,7 @@ impl Ingest {
       key_data[1..].fill(0);
       let s = varint::encode(m*3+1,&mut key_data[1..])?;
       let key = &key_data[0..1+s];
-      let res = {
-        self.lstore.get(&key)?
-      };
+      let res = self.lstore.lock().await.get(&key)?;
       if let Some(buf) = res {
         match decode(key,&buf)? {
           Decoded::Way(way) => {
@@ -537,7 +597,8 @@ impl Ingest {
       key
     };
     let mut results = vec![];
-    let mut iter = self.lstore.keys_iter(lt, gt);
+    let mut lstore = self.lstore.lock().await;
+    let mut iter = lstore.keys_iter(lt, gt);
     while let Some(key) = iter.next() {
       let (_,r_id) = varint::decode(&key[1+ex_id_len..])?;
       results.push(r_id);
@@ -549,7 +610,7 @@ impl Ingest {
     Ok(match ex_id%3 {
       0 => vec![], // node
       1 => { // way
-        if let Some(buf) = self.lstore.get(&id_key(ex_id)?)? {
+        if let Some(buf) = self.lstore.lock().await.get(&id_key(ex_id)?)? {
           let mut offset = 0;
           let (s,_fta) = varint::decode(&buf[offset..])?;
           offset += s;
@@ -567,7 +628,7 @@ impl Ingest {
         }
       },
       _ => { // relation
-        if let Some(buf) = self.lstore.get(&id_key(ex_id)?)? {
+        if let Some(buf) = self.lstore.lock().await.get(&id_key(ex_id)?)? {
           let mut offset = 0;
           let (s,_fta) = varint::decode(&buf[offset..])?;
           offset += s;

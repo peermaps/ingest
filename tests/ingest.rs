@@ -1,11 +1,12 @@
 use peermaps_ingest::{Ingest,EStore,LStore};
-use rocksdb::{DB,Options};
+use rocksdb::{Options,DBWithThreadMode,MultiThreaded};
 use async_std::{prelude::*,fs::File};
 use tempfile::Builder as Tmpfile;
 use eyros::{Coord as C};
 use georender_pack::{Feature,Point,Line,Area};
 use pretty_assertions::assert_eq;
 
+type DB = DBWithThreadMode<MultiThreaded>;
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
 #[async_std::test]
