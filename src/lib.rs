@@ -88,46 +88,59 @@ impl Ingest {
   // loop over the db, denormalize the records, georender-pack the data,
   // store into eyros, and write backrefs into rocksdb
   pub async fn process(&mut self) -> () {
-    let (kv_sender,kv_receiver) = bounded(100);
+    let (kv_sender,kv_receiver) = bounded(256*2);
     let mut work = vec![];
 
     {
-      let lstore_c = self.lstore.clone();
-      let reporter = self.reporter.clone();
-      work.push(spawn(async move {
-        let gt = &vec![ID_PREFIX];
-        let lt = &vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff];
-        let mut lstore = lstore_c.lock().await.new_with_same_db();
-        //let mut snap = lstore.snapshot();
-        //let mut iter = snap.iter(lt, gt);
-        let mut iter = lstore.iter(lt, gt);
-        let n = 1_000_000;
-        let mut batch = vec![];
-        while let Some(kv) = iter.next() {
-          batch.push(kv);
-          if batch.len() >= n {
-            if let Err(err) = kv_sender.send(batch.clone()).await {
+      let ncount = Arc::new(Mutex::new(256));
+      for b in 0x00..=0xff {
+        let gt = match b {
+          0 => vec![ID_PREFIX],
+          _ => vec![ID_PREFIX,b],
+        };
+        let lt = match b {
+          0xff => vec![ID_PREFIX,b,0xff,0xff,0xff,0xff,0xff,0xff,0xff],
+          _ => vec![ID_PREFIX,b+1],
+        };
+        let lstore_c = self.lstore.clone();
+        let reporter = self.reporter.clone();
+        let kvs = kv_sender.clone();
+        let nc = ncount.clone();
+        work.push(spawn(async move {
+          let mut lstore = lstore_c.lock().await.new_with_same_db();
+          //let mut snap = lstore.snapshot();
+          //let mut iter = snap.iter(lt, gt);
+          let mut iter = lstore.iter(&lt, &gt);
+          let n = 20_000;
+          let mut batch = vec![];
+          while let Some(kv) = iter.next() {
+            batch.push(kv);
+            if batch.len() >= n {
+              if let Err(err) = kvs.send(batch.clone()).await {
+                if let Some(f) = reporter.lock().await.as_mut() {
+                  f(Phase::Process(), Err(err.into()));
+                }
+              }
+              batch.clear();
+            }
+          }
+          if !batch.is_empty() {
+            if let Err(err) = kvs.send(batch.clone()).await {
               if let Some(f) = reporter.lock().await.as_mut() {
                 f(Phase::Process(), Err(err.into()));
               }
             }
-            batch.clear();
           }
-        }
-        if !batch.is_empty() {
-          if let Err(err) = kv_sender.send(batch.clone()).await {
-            if let Some(f) = reporter.lock().await.as_mut() {
-              f(Phase::Process(), Err(err.into()));
-            }
-          }
-        }
-        kv_sender.close();
-      }));
+          let mut n = nc.lock().await;
+          *n -= 1;
+          if *n == 0 { kvs.close(); }
+        }));
+      }
     }
 
     let (eflush_sender,eflush_receiver) = bounded(100);
     {
-      let nthreads: usize = 50;
+      let nthreads: usize = 256;
       let ncount = Arc::new(Mutex::new(nthreads));
       for _ in 0..nthreads {
         //eprintln!["{:?} => {:?}", &key, &value];
@@ -135,7 +148,7 @@ impl Ingest {
         let r = kv_receiver.clone();
         let es = eflush_sender.clone();
         let nc = ncount.clone();
-        work.push(spawn_local(async move {
+        work.push(spawn(async move {
           loop {
             if r.is_closed() && r.is_empty() { break }
             if let Ok(kvs) = r.recv().await {
