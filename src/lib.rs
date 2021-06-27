@@ -91,28 +91,39 @@ impl Ingest {
     let (kv_sender,kv_receiver) = bounded(100);
     let mut work = vec![];
 
-    let lstore_c = self.lstore.clone();
-    work.push(spawn(async move {
-      let gt = &vec![ID_PREFIX];
-      let lt = &vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff];
-      let mut lstore = lstore_c.lock().await.new_with_same_db();
-      //let mut snap = lstore.snapshot();
-      //let mut iter = snap.iter(lt, gt);
-      let mut iter = lstore.iter(lt, gt);
-      let n = 1_000_000;
-      let mut batch = vec![];
-      while let Some(kv) = iter.next() {
-        batch.push(kv);
-        if batch.len() >= n {
-          kv_sender.send(batch.clone()).await;
-          batch.clear();
+    {
+      let lstore_c = self.lstore.clone();
+      let reporter = self.reporter.clone();
+      work.push(spawn(async move {
+        let gt = &vec![ID_PREFIX];
+        let lt = &vec![ID_PREFIX,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff];
+        let mut lstore = lstore_c.lock().await.new_with_same_db();
+        //let mut snap = lstore.snapshot();
+        //let mut iter = snap.iter(lt, gt);
+        let mut iter = lstore.iter(lt, gt);
+        let n = 1_000_000;
+        let mut batch = vec![];
+        while let Some(kv) = iter.next() {
+          batch.push(kv);
+          if batch.len() >= n {
+            if let Err(err) = kv_sender.send(batch.clone()).await {
+              if let Some(f) = reporter.lock().await.as_mut() {
+                f(Phase::Process(), Err(err.into()));
+              }
+            }
+            batch.clear();
+          }
         }
-      }
-      if !batch.is_empty() {
-        kv_sender.send(batch.clone()).await;
-      }
-      kv_sender.close();
-    }));
+        if !batch.is_empty() {
+          if let Err(err) = kv_sender.send(batch.clone()).await {
+            if let Some(f) = reporter.lock().await.as_mut() {
+              f(Phase::Process(), Err(err.into()));
+            }
+          }
+        }
+        kv_sender.close();
+      }));
+    }
 
     let (eflush_sender,eflush_receiver) = bounded(100);
     {
@@ -142,7 +153,7 @@ impl Ingest {
                   }
                 }
               }
-              es.send(()).await;
+              es.send(()).await.unwrap();
             }
           }
           let mut n = nc.lock().await;
@@ -154,15 +165,24 @@ impl Ingest {
 
     {
       let estore = self.estore.clone();
+      let reporter = self.reporter.clone();
       work.push(spawn_local(async move {
         while eflush_receiver.recv().await.is_ok() {
           if eflush_receiver.is_closed() && eflush_receiver.is_empty() { break }
           let mut e = estore.lock().await;
-          e.check_flush().await;
+          if let Err(err) = e.check_flush().await {
+            if let Some(f) = reporter.lock().await.as_mut() {
+              f(Phase::Process(), Err(err.into()));
+            }
+          }
         }
         {
           let mut e = estore.lock().await;
-          e.check_flush().await;
+          if let Err(err) = e.check_flush().await {
+            if let Some(f) = reporter.lock().await.as_mut() {
+              f(Phase::Process(), Err(err.into()));
+            }
+          }
         }
       }));
     }
