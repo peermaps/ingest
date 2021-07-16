@@ -2,23 +2,27 @@
 #![feature(async_closure,backtrace)]
 pub mod encoder;
 pub use encoder::*;
-pub mod store;
-pub use store::*;
 pub mod error;
 pub use error::*;
+mod record;
+use osmxq::{XQ,RW,Record};
+mod value;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
-use std::collections::{HashMap,HashSet};
-use async_std::{prelude::*,sync::{Arc,Mutex},io,task::{spawn,spawn_local},channel::bounded};
-use desert::varint;
+use std::collections::HashMap;
+use async_std::{sync::{Arc,Mutex},task,channel};
 use futures::future::join_all;
 
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
 
+type R = Decoded;
+type T = eyros::Tree2<f32,f32,V>;
 type P = (eyros::Coord<f32>,eyros::Coord<f32>);
+type V = value::V;
+pub type EDB = eyros::DB<random_access_disk::RandomAccessDisk,T,P,V>;
 
 #[derive(Debug,Clone,PartialEq)]
 pub enum Phase {
@@ -37,19 +41,19 @@ impl ToString for Phase {
   }
 }
 
-#[derive(Clone)]
-pub struct Ingest {
-  pub lstore: Arc<Mutex<LStore>>,
-  pub estore: Arc<Mutex<EStore>>,
+type Reporter = Arc<Mutex<Option<Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>>>>;
+pub struct Ingest<S> where S: osmxq::RW {
+  xq: Arc<Mutex<XQ<S,R>>>,
+  db: EDB,
   place_other: u64,
-  reporter: Arc<Mutex<Option<Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>>>>,
+  reporter: Reporter,
 }
 
-impl Ingest {
-  pub fn new(lstore: LStore, estore: EStore) -> Self {
+impl<S> Ingest<S> where S: osmxq::RW+'static {
+  pub fn new(xq: XQ<S,R>, db: EDB) -> Self {
     Self {
-      lstore: Arc::new(Mutex::new(lstore)),
-      estore: Arc::new(Mutex::new(estore)),
+      xq: Arc::new(Mutex::new(xq)),
+      db,
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
       reporter: Arc::new(Mutex::new(None)),
     }
@@ -61,632 +65,145 @@ impl Ingest {
   }
 
   // write the pbf into rocksdb
-  pub async fn load_pbf<R: std::io::Read+Send>(&mut self, pbf: R) -> Result<(),Error> {
-    let mut lstore = self.lstore.lock().await;
-    let mut reporter = self.reporter.lock().await;
-    osmpbf::ElementReader::new(pbf).for_each(|element| {
-      let res = encode_osmpbf(&element);
-      match (res, reporter.as_mut()) {
-        (Err(e),Some(f)) => f(Phase::Pbf(),Err(e.into())),
-        (Err(_),_) => {},
-        (Ok((key,value)),Some(f)) => {
-          if let Err(e) = lstore.put(&key, &value) {
-            f(Phase::Pbf(),Err(e.into()));
+  pub async fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
+    let (sender,receiver) = channel::bounded::<Decoded>(1_000);
+    let mut work = vec![];
+    work.push(task::spawn(async move {
+      let sc = sender.clone();
+      osmpbf::ElementReader::new(pbf).for_each(move |element| {
+        let r = Decoded::from_pbf_element(&element).unwrap();
+        let s = sc.clone();
+        task::block_on(async move {
+          s.send(r).await.unwrap();
+        });
+      }).unwrap();
+      sender.close();
+    }));
+    {
+      async fn add<S>(xqc: Arc<Mutex<XQ<S,Decoded>>>, records: &[Decoded], reporter: Reporter) where S: RW {
+        let mut xq = xqc.lock().await;
+        if let Some(f) = reporter.lock().await.as_mut() {
+          if let Err(err) = xq.add_records(&records).await {
+            f(Phase::Pbf(), Err(err.into()));
           } else {
-            f(Phase::Pbf(),Ok(()));
+            f(Phase::Pbf(), Ok(()));
           }
-        },
-        (Ok((key,value)),None) => {
-          if let Err(_) = lstore.put(&key, &value) {}
+        } else {
+          if let Err(_) = xq.add_records(&records).await {}
         }
       }
-    })?;
-    lstore.sync()?;
+      let xqc = self.xq.clone();
+      let reporter = self.reporter.clone();
+      work.push(task::spawn(async move {
+        let mut records = Vec::with_capacity(100_000);
+        while let Ok(record) = receiver.recv().await {
+          records.push(record);
+          if records.len() >= 100_000 {
+            add(xqc.clone(), &records, reporter.clone()).await;
+            records.clear();
+          }
+        }
+        if !records.is_empty() {
+          add(xqc.clone(), &records, reporter.clone()).await;
+        }
+        xqc.lock().await.finish().await.unwrap();
+      }));
+    }
+    join_all(work).await;
     Ok(())
   }
 
   // loop over the db, denormalize the records, georender-pack the data,
   // store into eyros, and write backrefs into rocksdb
   pub async fn process(&mut self) -> () {
-    let (kv_sender,kv_receiver) = bounded(256*2);
-    let mut work = vec![];
-
-    {
-      let ncount = Arc::new(Mutex::new(256));
-      for b in 0x00..=0xff {
-        let gt = match b {
-          0 => vec![ID_PREFIX],
-          _ => vec![ID_PREFIX,b],
-        };
-        let lt = match b {
-          0xff => vec![ID_PREFIX,b,0xff,0xff,0xff,0xff,0xff,0xff,0xff],
-          _ => vec![ID_PREFIX,b+1],
-        };
-        let lstore_c = self.lstore.clone();
-        let reporter = self.reporter.clone();
-        let kvs = kv_sender.clone();
-        let nc = ncount.clone();
-        work.push(spawn(async move {
-          let mut lstore = lstore_c.lock().await.new_with_same_db();
-          //let mut snap = lstore.snapshot();
-          //let mut iter = snap.iter(lt, gt);
-          let mut iter = lstore.iter(&lt, &gt);
-          let n = 20_000;
-          let mut batch = vec![];
-          while let Some(kv) = iter.next() {
-            batch.push(kv);
-            if batch.len() >= n {
-              if let Err(err) = kvs.send(batch.clone()).await {
-                if let Some(f) = reporter.lock().await.as_mut() {
-                  f(Phase::Process(), Err(err.into()));
-                }
-              }
-              batch.clear();
-            }
-          }
-          if !batch.is_empty() {
-            if let Err(err) = kvs.send(batch.clone()).await {
-              if let Some(f) = reporter.lock().await.as_mut() {
-                f(Phase::Process(), Err(err.into()));
-              }
-            }
-          }
-          let mut n = nc.lock().await;
-          *n -= 1;
-          if *n == 0 { kvs.close(); }
-        }));
-      }
-    }
-
-    let (eflush_sender,eflush_receiver) = bounded(100);
-    {
-      let nthreads: usize = 256;
-      let ncount = Arc::new(Mutex::new(nthreads));
-      for _ in 0..nthreads {
-        //eprintln!["{:?} => {:?}", &key, &value];
-        let mut this = self.clone();
-        let r = kv_receiver.clone();
-        let es = eflush_sender.clone();
-        let nc = ncount.clone();
-        work.push(spawn(async move {
-          loop {
-            if r.is_closed() && r.is_empty() { break }
-            if let Ok(kvs) = r.recv().await {
-              for (key,value) in kvs {
-                let res = match decode(&key,&value) {
-                  Err(e) => Err(e.into()),
-                  Ok(Decoded::Node(node)) => this.create_node(&node).await,
-                  Ok(Decoded::Way(way)) => this.create_way(&way).await,
-                  Ok(Decoded::Relation(relation)) => this.create_relation(&relation).await,
-                };
-                if let Some(f) = this.reporter.lock().await.as_mut() {
-                  match res {
-                    Err(e) => f(Phase::Process(), Err(e.into())),
-                    Ok(r) => f(Phase::Process(), Ok(r)),
-                  }
-                }
-              }
-              es.send(()).await.unwrap();
-            }
-          }
-          let mut n = nc.lock().await;
-          *n -= 1;
-          if *n == 0 { es.close(); }
-        }));
-      }
-    }
-
-    {
-      let estore = self.estore.clone();
-      let reporter = self.reporter.clone();
-      work.push(spawn_local(async move {
-        while eflush_receiver.recv().await.is_ok() {
-          if eflush_receiver.is_closed() && eflush_receiver.is_empty() { break }
-          let mut e = estore.lock().await;
-          if let Err(err) = e.check_flush().await {
-            if let Some(f) = reporter.lock().await.as_mut() {
-              f(Phase::Process(), Err(err.into()));
-            }
-          }
-        }
-        {
-          let mut e = estore.lock().await;
-          if let Err(err) = e.check_flush().await {
-            if let Some(f) = reporter.lock().await.as_mut() {
-              f(Phase::Process(), Err(err.into()));
-            }
-          }
-        }
-      }));
-    }
-    join_all(work).await;
-
-    {
-      let optimize = 6;
-      let mut estore = self.estore.lock().await;
-      if let Some(f) = self.reporter.lock().await.as_mut() {
-        if let Err(e) = estore.optimize(optimize).await {
-          f(Phase::Process(), Err(e.into()));
-        }
-        if let Err(e) = estore.flush().await {
-          f(Phase::Process(), Err(e.into()));
-        }
-        if let Err(e) = estore.sync().await {
-          f(Phase::Process(), Err(e.into()));
-        }
-      } else {
-        if let Err(_) = estore.optimize(optimize).await {}
-        if let Err(_) = estore.flush().await {}
-        if let Err(_) = estore.sync().await {}
-      }
-    }
-    {
-      if let Some(f) = self.reporter.lock().await.as_mut() {
-        if let Err(e) = self.lstore.lock().await.sync() {
-          f(Phase::Process(), Err(e.into()));
-        }
-      } else {
-        if let Err(_) = self.lstore.lock().await.sync() {}
-      }
-    }
-  }
-
-  // import changes from an o5c changeset file
-  pub async fn changeset(&mut self, infile: Box<dyn io::Read+Send+Unpin>) -> Result<(),Error> {
-    let mut stream = o5m_stream::decode(infile);
-    while let Some(result) = stream.next().await {
-      let dataset = result?;
-      let m = match &dataset {
-        o5m_stream::Dataset::Node(node) => {
-          match &node.data {
-            Some(_) => Some((false,node.id*3+0)), // modify or create
-            None => Some((true,node.id*3+0)), // delete
-          }
-        },
-        o5m_stream::Dataset::Way(way) => {
-          match &way.data {
-            Some(data) => { // modify or create
-              let mut deps = HashMap::with_capacity(data.refs.len());
-              self.get_way_deps(data.refs.iter(), &mut deps).await?;
-              let refs = self.get_refs(way.id*3+1).await?;
-              let prev_set = refs.into_iter().collect::<HashSet<u64>>();
-              let new_set = deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
-              {
-                let mut lstore = self.lstore.lock().await;
-                for r in prev_set.difference(&new_set) {
-                  lstore.del(&backref_key(*r*3+0, way.id*3+1)?)?;
-                }
-                for r in new_set.difference(&prev_set) {
-                  lstore.put(&backref_key(*r*3+0, way.id*3+1)?,&vec![])?;
-                }
-              }
-              Some((false,way.id*3+1))
-            },
-            None => Some((true,way.id*3+1)), // delete
-          }
-        },
-        o5m_stream::Dataset::Relation(relation) => {
-          match &relation.data {
-            Some(data) => { // modify or create
-              let mut node_deps = HashMap::new();
-              let mut way_deps = HashMap::with_capacity(data.members.len());
-              let refs = data.members.iter().map(|m| m.id).collect::<Vec<u64>>();
-              self.get_relation_deps(refs.iter(), &mut node_deps, &mut way_deps).await?;
-              let prev_refs = self.get_refs(relation.id*3+2).await?;
-              let prev_set = prev_refs.into_iter().collect::<HashSet<u64>>();
-              let new_set = way_deps.keys().map(|r| *r).into_iter().collect::<HashSet<u64>>();
-              {
-                let mut lstore = self.lstore.lock().await;
-                for r in prev_set.difference(&new_set) {
-                  lstore.del(&backref_key(*r*3+1, relation.id*3+2)?)?;
-                }
-                for r in new_set.difference(&prev_set) {
-                  lstore.put(&backref_key(*r*3+1, relation.id*3+2)?,&vec![])?;
-                }
-              }
-              Some((false,relation.id*3+2))
-            },
-            None => Some((true,relation.id*3+2)), // delete
-          }
-        },
-        _ => None,
-      };
-      if let Some((is_rm,ex_id)) = m {
-        if is_rm {
-          // delete the record but don't bother dealing with backrefs
-          // because the referred-to elements *should* be deleted too.
-          // not the job of this ingest script to verify changeset integrity
-          let backrefs = self.get_backrefs(ex_id).await?;
-          if let Some(pt) = self.get_point(ex_id).await? {
-            let mut estore = self.estore.lock().await;
-            estore.delete(pt, ex_id).await?;
-          }
-          let mut lstore = self.lstore.lock().await;
-          lstore.del(&id_key(ex_id)?)?;
-          for r in backrefs.iter() {
-            lstore.del(&backref_key(*r, ex_id)?)?;
-          }
-        } else {
-          let prev_pt = self.get_point(ex_id).await?;
-          if let Some(encoded) = encode_o5m(&dataset)? {
-            self.lstore.lock().await.put(&id_key(ex_id)?, &encoded)?;
-          }
-          // recursively recalculates backrefs
-          self.recalculate(ex_id, &prev_pt).await?;
-          self.estore.lock().await.check_flush().await?;
-        }
-      }
-    }
-    self.lstore.lock().await.sync()?;
-    let mut estore = self.estore.lock().await;
-    estore.flush().await?;
-    estore.sync().await?;
-    Ok(())
-  }
-
-  // call this when one of a record's dependants changes
-  #[async_recursion::async_recursion]
-  async fn recalculate(&mut self, ex_id: u64, prev_point: &Option<P>) -> Result<(),Error> {
-    let key = id_key(ex_id)?;
-    let res = self.lstore.lock().await.get(&key)?;
-    if let Some(buf) = res {
-      match decode(&key,&buf)? {
-        Decoded::Node(node) => {
-          if let Some((new_point,encoded)) = self.encode_node(&node)? {
-            let mut estore = self.estore.lock().await;
-            if let Some(p) = prev_point {
-              estore.push_update(p, &new_point, &encoded.into());
-            } else {
-              estore.push_create(new_point.clone(), encoded.into());
-            }
-          } else if let Some(p) = prev_point {
-            let mut estore = self.estore.lock().await;
-            estore.push_delete(p.clone(), ex_id);
-          }
-        },
-        Decoded::Way(way) => {
-          if let Some((new_point,_deps,encoded)) = self.encode_way(&way).await? {
-            let backrefs = self.get_backrefs(ex_id).await?;
-            let mut prev_points = Vec::with_capacity(backrefs.len());
-            for r in backrefs.iter() {
-              prev_points.push(self.get_point(*r).await?);
-            }
-            if way.feature_type == self.place_other {
-              let mut estore = self.estore.lock().await;
-              if let Some(p) = prev_point {
-                estore.push_delete(p.clone(), way.id*3+1);
-              }
-            } else if let Some(p) = prev_point {
-              let mut estore = self.estore.lock().await;
-              estore.push_update(p, &new_point, &encoded.into());
-            } else {
-              let mut estore = self.estore.lock().await;
-              estore.push_create(new_point.clone(), encoded.into());
-            }
-            for (r,p) in backrefs.iter().zip(prev_points.iter()) {
-              self.recalculate(*r, p).await?;
-            }
-          }
-        },
-        Decoded::Relation(relation) => {
-          if let Some((new_point,_deps,encoded)) = self.encode_relation(&relation).await? {
-            let backrefs = self.get_backrefs(ex_id).await?;
-            let mut prev_points = Vec::with_capacity(backrefs.len());
-            for r in backrefs.iter() {
-              prev_points.push(self.get_point(*r).await?);
-            }
-            if relation.feature_type == self.place_other {
-              let mut estore = self.estore.lock().await;
-              if let Some(p) = prev_point {
-                estore.push_delete(p.clone(), relation.id*3+2);
-              }
-            } else if let Some(p) = prev_point {
-              let mut estore = self.estore.lock().await;
-              estore.push_update(p, &new_point, &encoded.into());
-            } else {
-              let mut estore = self.estore.lock().await;
-              estore.push_create(new_point.clone(), encoded.into());
-            }
-            for (r,p) in backrefs.iter().zip(prev_points.iter()) {
-              self.recalculate(*r, p).await?;
-            }
-          }
-        },
-      }
-    }
-    Ok(())
-  }
-
-  #[async_recursion::async_recursion]
-  async fn get_point(&mut self, ex_id: u64) -> Result<Option<P>,Error> {
-    fn merge(a: &P, b: &P) -> P {
-      (merge_pt(&a.0,&b.0),merge_pt(&a.1,&b.1))
-    }
-    fn merge_pt(a: &eyros::Coord<f32>, b: &eyros::Coord<f32>) -> eyros::Coord<f32> {
-      let amin = match a {
-        eyros::Coord::Scalar(x) => x,
-        eyros::Coord::Interval(x,_) => x,
-      };
-      let amax = match a {
-        eyros::Coord::Scalar(x) => x,
-        eyros::Coord::Interval(_,x) => x,
-      };
-      let bmin = match b {
-        eyros::Coord::Scalar(x) => x,
-        eyros::Coord::Interval(x,_) => x,
-      };
-      let bmax = match b {
-        eyros::Coord::Scalar(x) => x,
-        eyros::Coord::Interval(_,x) => x,
-      };
-      eyros::Coord::Interval(amin.min(*bmin), amax.max(*bmax))
-    }
-    Ok(match ex_id%3 {
-      0 => {
-        let kbuf = id_key(ex_id)?;
-        if let Some(buf) = self.lstore.lock().await.get(&kbuf)? {
-          match decode(&kbuf, &buf)? {
-            Decoded::Node(node) => {
-              Some((eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)))
-            },
-            _ => None
-          }
-        } else {
-          None
-        }
-      },
-      n => {
-        let refs = self.get_refs(ex_id).await?;
-        let mut bbox = None;
-        for r in refs.iter() {
-          let exr = r*3 + match n { 2 => 1, 1 => 0, _ => 0 };
-          if let Some(p) = self.get_point(exr).await? {
-            if let Some(b) = bbox {
-              bbox = Some(merge(&b, &p));
-            } else {
-              bbox = Some(p);
-            }
-          }
-        }
-        bbox
-      },
-    })
-  }
-
-  fn encode_node(&self, node: &DecodedNode) -> Result<Option<(P,Vec<u8>)>,Error> {
-    if node.feature_type == self.place_other { return Ok(None) }
-    let encoded = georender_pack::encode::node_from_parsed(
-      node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
-    )?;
-    if encoded.is_empty() { return Ok(None) }
-    let point = (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat));
-    Ok(Some((point,encoded)))
-  }
-
-  async fn create_node(&self, node: &DecodedNode) -> Result<(),Error> {
-    if let Some((point,encoded)) = self.encode_node(node)? {
-      let mut estore = self.estore.lock().await;
-      estore.push_create(point, encoded.into());
-    }
-    Ok(())
-  }
-
-  async fn encode_way(&mut self, way: &DecodedWay) -> Result<Option<(P,NodeDeps,Vec<u8>)>,Error> {
-    let mut deps = HashMap::with_capacity(way.refs.len());
-    self.get_way_deps(way.refs.iter(), &mut deps).await?;
-    let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-    for (lon,lat) in deps.values() {
-      bbox.0 = bbox.0.min(*lon);
-      bbox.1 = bbox.1.min(*lat);
-      bbox.2 = bbox.2.max(*lon);
-      bbox.3 = bbox.3.max(*lat);
-    }
-    let encoded = georender_pack::encode::way_from_parsed(
-      way.id*3+1, way.feature_type, way.is_area, &way.labels, &way.refs, &deps
-    )?;
-    if encoded.is_empty() {
-      Ok(None)
-    } else {
-      let point = (
-        eyros::Coord::Interval(bbox.0,bbox.2),
-        eyros::Coord::Interval(bbox.1,bbox.3),
-      );
-      Ok(Some((point,deps,encoded)))
-    }
-  }
-
-  async fn create_way(&mut self, way: &DecodedWay) -> Result<(),Error> {
-    if let Some((point,deps,encoded)) = self.encode_way(way).await? {
-      if way.feature_type != self.place_other {
-        let mut estore = self.estore.lock().await;
-        estore.push_create(point, encoded.into());
-      }
-      let mut lstore = self.lstore.lock().await;
-      for r in deps.keys() {
-        // node -> way backref
-        lstore.put(&backref_key(*r*3+0, way.id*3+1)?, &vec![])?;
-      }
-    }
-    Ok(())
-  }
-
-  async fn create_relation(&mut self, relation: &DecodedRelation) -> Result<(),Error> {
-    if let Some((point,deps,encoded)) = self.encode_relation(relation).await? {
-      if relation.feature_type != self.place_other {
-        let mut estore = self.estore.lock().await;
-        estore.push_create(point, encoded.into());
-      }
-      let mut lstore = self.lstore.lock().await;
-      for way_id in deps.keys() {
-        // way -> relation backref
-        lstore.put(&backref_key(way_id*3+1,relation.id*3+2)?, &vec![])?;
-      }
-    }
-    Ok(())
-  }
-
-  async fn encode_relation(&mut self, relation: &DecodedRelation) -> Result<Option<(P,WayDeps,Vec<u8>)>,Error> {
-    let mut node_deps = HashMap::new();
-    let mut way_deps = HashMap::with_capacity(relation.members.len());
-    let refs = relation.members.iter().map(|m| m/2).collect::<Vec<u64>>();
-    self.get_relation_deps(refs.iter(), &mut node_deps, &mut way_deps).await?;
-    let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-    for refs in way_deps.values() {
-      for r in refs.iter() {
-        if let Some(p) = node_deps.get(r) {
-          bbox.0 = bbox.0.min(p.0);
-          bbox.1 = bbox.1.min(p.1);
-          bbox.2 = bbox.2.max(p.0);
-          bbox.3 = bbox.3.max(p.1);
-        }
-      }
-    }
-    let members = relation.members.iter().map(|m| {
-      georender_pack::Member::new(
-        m/2,
-        match m%2 {
-          0 => georender_pack::MemberRole::Outer(),
-          _ => georender_pack::MemberRole::Inner(),
-        },
-        georender_pack::MemberType::Way()
-      )
-    }).collect::<Vec<_>>();
-    let encoded = georender_pack::encode::relation_from_parsed(
-      relation.id*3+2, relation.feature_type, relation.is_area,
-      &relation.labels, &members, &node_deps, &way_deps
-    )?;
-    if encoded.is_empty() {
-      Ok(None)
-    } else {
-      let point = (
-        eyros::Coord::Interval(bbox.0,bbox.2),
-        eyros::Coord::Interval(bbox.1,bbox.3),
-      );
-      Ok(Some((point,way_deps,encoded)))
-    }
-  }
-
-  async fn get_way_deps(&mut self, iter: impl Iterator<Item=&u64>+Send, deps: &mut NodeDeps)
-  -> Result<(),Error> {
-    let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
-    key_data[0] = ID_PREFIX;
-    let mut first = None;
-    for r in iter {
-      if first.is_none() {
-        first = Some(*r);
-      } else if first == Some(*r) {
-        continue;
-      }
-      let s = varint::encode(r*3+0,&mut key_data[1..])?;
-      let key = &key_data[0..1+s];
-      if let Some(buf) = self.lstore.lock().await.get(key)? {
-        match decode(key,&buf)? {
+    let mut xq = self.xq.lock().await;
+    let quad_ids = xq.get_quad_ids();
+    for q_id in quad_ids {
+      let records = xq.read_quad_denorm(q_id).await.unwrap();
+      let mut batch = Vec::with_capacity(records.len());
+      for (_r_id,r,deps) in records {
+        match &r {
           Decoded::Node(node) => {
-            deps.insert(*r,(node.lon,node.lat));
+            if node.feature_type == self.place_other { continue }
+            let encoded = georender_pack::encode::node_from_parsed(
+              node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
+            ).unwrap();
+            if encoded.is_empty() { continue }
+            batch.push(eyros::Row::Insert(
+              (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)),
+              encoded.into()
+            ));
           },
-          _ => {},
-        }
-      }
-    }
-    Ok(())
-  }
-
-  async fn get_relation_deps(&mut self, iter: impl Iterator<Item=&u64>+Send,
-    node_deps: &mut NodeDeps, way_deps: &mut WayDeps
-  ) -> Result<(),Error> {
-    let mut key_data = [ID_PREFIX,0,0,0,0,0,0,0,0];
-    key_data[0] = ID_PREFIX;
-    for m in iter {
-      key_data[1..].fill(0);
-      let s = varint::encode(m*3+1,&mut key_data[1..])?;
-      let key = &key_data[0..1+s];
-      let res = self.lstore.lock().await.get(&key)?;
-      if let Some(buf) = res {
-        match decode(key,&buf)? {
           Decoded::Way(way) => {
-            way_deps.insert(way.id, way.refs.clone());
-            self.get_way_deps(way.refs.iter(), node_deps).await?;
+            if way.feature_type == self.place_other { continue }
+            let mut pdeps = HashMap::new();
+            for d in deps {
+              if let Some(p) = d.get_position() {
+                pdeps.insert(d.get_id()/3, p);
+              }
+            }
+            let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
+            for (lon,lat) in pdeps.values() {
+              bbox.0 = bbox.0.min(*lon);
+              bbox.1 = bbox.1.min(*lat);
+              bbox.2 = bbox.2.max(*lon);
+              bbox.3 = bbox.3.max(*lat);
+            }
+            let encoded = georender_pack::encode::way_from_parsed(
+              way.id*3+1, way.feature_type, way.is_area, &way.labels, &way.refs, &pdeps
+            ).unwrap();
+            if encoded.is_empty() { continue }
+            let point = (
+              eyros::Coord::Interval(bbox.0,bbox.2),
+              eyros::Coord::Interval(bbox.1,bbox.3),
+            );
+            batch.push(eyros::Row::Insert(point, encoded.into()));
           },
-          _ => {},
+          Decoded::Relation(relation) => {
+            if relation.feature_type == self.place_other { continue }
+            let mut node_deps: NodeDeps = HashMap::new();
+            let mut way_deps: WayDeps = HashMap::new();
+
+            for d in deps {
+              if let Some(p) = d.get_position() {
+                node_deps.insert(d.get_id(), p);
+                continue;
+              }
+              let drefs = d.get_refs();
+              if drefs.is_empty() { continue }
+              way_deps.insert(d.get_id(), drefs.to_vec());
+            }
+            let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
+            for p in node_deps.values() {
+              bbox.0 = bbox.0.min(p.0);
+              bbox.1 = bbox.1.min(p.1);
+              bbox.2 = bbox.2.max(p.0);
+              bbox.3 = bbox.3.max(p.1);
+            }
+            let members = relation.members.iter().map(|m| {
+              georender_pack::Member::new(
+                m/2,
+                match m%2 {
+                  0 => georender_pack::MemberRole::Outer(),
+                  _ => georender_pack::MemberRole::Inner(),
+                },
+                georender_pack::MemberType::Way()
+              )
+            }).collect::<Vec<_>>();
+            let encoded = georender_pack::encode::relation_from_parsed(
+              relation.id*3+2, relation.feature_type, relation.is_area,
+              &relation.labels, &members, &node_deps, &way_deps
+            ).unwrap();
+            let point = (
+              eyros::Coord::Interval(bbox.0,bbox.2),
+              eyros::Coord::Interval(bbox.1,bbox.3),
+            );
+            batch.push(eyros::Row::Insert(point, encoded.into()));
+          },
         }
       }
+      self.db.batch(&batch).await.unwrap();
     }
-    Ok(())
+    self.db.sync().await.unwrap();
   }
-
-  async fn get_backrefs(&mut self, ex_id: u64) -> Result<Vec<u64>,Error> {
-    let ex_id_len = varint::length(ex_id);
-    let gt = {
-      let mut key = vec![0u8;1+ex_id_len];
-      key[0] = BACKREF_PREFIX;
-      varint::encode(ex_id, &mut key[1..])?;
-      key
-    };
-    let lt = {
-      let mut key = vec![0u8;1+ex_id_len+8];
-      key[0] = BACKREF_PREFIX;
-      let s = varint::encode(ex_id, &mut key[1..])?;
-      for i in 0..8 { key[1+s+i] = 0xff }
-      key
-    };
-    let mut results = vec![];
-    let mut lstore = self.lstore.lock().await;
-    let mut iter = lstore.keys_iter(lt, gt);
-    while let Some(key) = iter.next() {
-      let (_,r_id) = varint::decode(&key[1+ex_id_len..])?;
-      results.push(r_id);
-    }
-    Ok(results)
-  }
-
-  async fn get_refs(&mut self, ex_id: u64) -> Result<Vec<u64>,Error> {
-    Ok(match ex_id%3 {
-      0 => vec![], // node
-      1 => { // way
-        if let Some(buf) = self.lstore.lock().await.get(&id_key(ex_id)?)? {
-          let mut offset = 0;
-          let (s,_fta) = varint::decode(&buf[offset..])?;
-          offset += s;
-          let (s,reflen) = varint::decode(&buf[offset..])?;
-          offset += s;
-          let mut refs = Vec::with_capacity(reflen as usize);
-          for _ in 0..reflen {
-            let (s,r) = varint::decode(&buf[offset..])?;
-            offset += s;
-            refs.push(r);
-          }
-          refs
-        } else {
-          vec![]
-        }
-      },
-      _ => { // relation
-        if let Some(buf) = self.lstore.lock().await.get(&id_key(ex_id)?)? {
-          let mut offset = 0;
-          let (s,_fta) = varint::decode(&buf[offset..])?;
-          offset += s;
-          let (s,mlen) = varint::decode(&buf[offset..])?;
-          offset += s;
-          let mut refs = Vec::with_capacity(mlen as usize);
-          for _ in 0..mlen {
-            let (s,r) = varint::decode(&buf[offset..])?;
-            offset += s;
-            refs.push(r/2);
-          }
-          refs
-        } else {
-          vec![]
-        }
-      },
-    })
-  }
-}
-
-fn backref_key(a: u64, b: u64) -> Result<Vec<u8>,Error> {
-  // both a and b are extended ids
-  let mut key = vec![0u8;1+varint::length(a)+varint::length(b)];
-  key[0] = BACKREF_PREFIX;
-  let s = varint::encode(a, &mut key[1..])?;
-  varint::encode(b, &mut key[1+s..])?;
-  Ok(key)
 }

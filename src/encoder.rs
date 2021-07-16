@@ -34,6 +34,69 @@ pub struct DecodedRelation {
   pub labels: Vec<u8>,
 }
 
+impl Decoded {
+  pub fn from_pbf_element(element: &osmpbf::Element) -> Result<Self,Error> {
+    let tags = match element {
+      osmpbf::Element::Node(node) => node.tags().collect::<Vec<_>>(),
+      osmpbf::Element::DenseNode(node) => node.tags().collect::<Vec<_>>(),
+      osmpbf::Element::Way(way) => way.tags().collect::<Vec<_>>(),
+      osmpbf::Element::Relation(relation) => relation.tags().collect::<Vec<_>>(),
+    };
+    let (feature_type,labels) = georender_pack::tags::parse(&tags)?;
+    Ok(match element {
+      osmpbf::Element::Node(node) => {
+        Decoded::Node(DecodedNode {
+          id: node.id() as u64,
+          lon: node.lon() as f32,
+          lat: node.lat() as f32,
+          feature_type,
+          labels,
+        })
+      },
+      osmpbf::Element::DenseNode(node) => {
+        Decoded::Node(DecodedNode {
+          id: node.id() as u64,
+          lon: node.lon() as f32,
+          lat: node.lat() as f32,
+          feature_type,
+          labels,
+        })
+      },
+      osmpbf::Element::Way(way) => {
+        let refs = way.refs().map(|r| r as u64).collect::<Vec<_>>();
+        let is_area = osm_is_area::way(&tags, &refs);
+        Decoded::Way(DecodedWay {
+          id: way.id() as u64,
+          feature_type,
+          is_area,
+          refs,
+          labels,
+        })
+      },
+      osmpbf::Element::Relation(relation) => {
+        let members: Vec<u64> = relation.members()
+          .filter(|m| {
+            let role = m.role().unwrap();
+            m.member_type == osmpbf::RelMemberType::Way
+              && (role == "inner" || role == "outer")
+          })
+          .map(|m| {
+            (m.member_id as u64)*2 + match m.role().unwrap() { "inner" => 1, _ => 0 }
+          })
+          .collect();
+        let is_area = osm_is_area::relation(&tags, &vec![1]);
+        Decoded::Relation(DecodedRelation {
+          id: relation.id() as u64,
+          feature_type,
+          is_area,
+          members,
+          labels,
+        })
+      }
+    })
+  }
+}
+
 pub fn encode_osmpbf(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Error> {
   let tags = match element {
     osmpbf::Element::Node(node) => node.tags().collect::<Vec<_>>(),

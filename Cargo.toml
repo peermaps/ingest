@@ -28,8 +28,8 @@ interleaved-ordered = "0.1.1"
 async-recursion = "0.3.2"
 argmap = "1.1.0"
 indoc = "1.0.3"
-rocksdb = "0.16.0"
 futures = "0.3.13"
+osmxq = { path = "../osmxq" }
 
 [[bench]]
 name = "large_area"
