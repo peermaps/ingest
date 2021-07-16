@@ -64,7 +64,6 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
     self
   }
 
-  // write the pbf into rocksdb
   pub async fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
     let mut work = vec![];
@@ -106,15 +105,18 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
         if !records.is_empty() {
           add(xqc.clone(), &records, reporter.clone()).await;
         }
-        xqc.lock().await.finish().await.unwrap();
+        {
+          let mut xq = xqc.lock().await;
+          xq.finish().await.unwrap();
+          xq.flush().await.unwrap();
+        }
       }));
     }
     join_all(work).await;
     Ok(())
   }
 
-  // loop over the db, denormalize the records, georender-pack the data,
-  // store into eyros, and write backrefs into rocksdb
+  // loop over the db, denormalize the records, georender-pack the data into eyros
   pub async fn process(&mut self) -> () {
     let mut xq = self.xq.lock().await;
     let quad_ids = xq.get_quad_ids();
