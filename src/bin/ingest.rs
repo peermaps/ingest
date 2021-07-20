@@ -37,8 +37,9 @@ async fn run() -> Result<(),Error> {
   let mut last_print = std::time::Instant::now();
   let mut last_phase: Option<Phase> = None;
   let mut last_count: u64 = 0;
-  let mut rate = None;
+  let mut rate: Option<f64> = None;
   let reporter = Box::new(move |phase: Phase, res| {
+    /*
     let mut should_print = false;
     if let Err(e) = res {
       eprintln!["\x1b[1K\r[{}] {} error: {}",
@@ -68,6 +69,7 @@ async fn run() -> Result<(),Error> {
         match rate { None => "---".to_string(), Some(x) => format!["{:.0}/s", x] }];
     }
     last_phase = Some(phase);
+    */
   });
 
   match args.get(1).map(|x| x.as_str()) {
@@ -115,7 +117,6 @@ async fn run() -> Result<(),Error> {
         x => Box::new(std::fs::File::open(x)?),
       };
       ingest.load_pbf(pbf_stream).await?;
-      ingest.process().await;
       eprintln![""];
     },
     Some("process") => {

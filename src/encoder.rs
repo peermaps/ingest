@@ -136,8 +136,7 @@ pub fn encode_osmpbf(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Erro
       let refs: Vec<i64> = way.refs().into_iter().collect();
       let rsize = varint::length(refs.len() as u64)
         + refs.iter().fold(0usize,|sum,r| sum + varint::length(*r as u64));
-      let tagv = way.tags().collect::<Vec<_>>();
-      let is_area = osm_is_area::way(&tagv, &way.refs().collect::<Vec<_>>()) as u64;
+      let is_area = osm_is_area::way(&tags, &way.refs().collect::<Vec<_>>()) as u64;
       let fta = ft*2+is_area;
       let mut buf = vec![0u8;varint::length(fta)+rsize+labels.len()];
       let mut offset = 0;
@@ -162,8 +161,7 @@ pub fn encode_osmpbf(element: &osmpbf::Element) -> Result<(Vec<u8>,Vec<u8>),Erro
         .collect();
       let msize = varint::length(members.len() as u64)
         + members.iter().fold(0usize,|sum,m| sum + varint::length(*m));
-      let tagv = relation.tags().collect::<Vec<_>>();
-      let is_area = osm_is_area::relation(&tagv, &vec![1]) as u64;
+      let is_area = osm_is_area::relation(&tags, &vec![1]) as u64;
       let fta = ft*2+is_area;
       let mut buf = vec![0u8;varint::length(fta)+msize+labels.len()];
       let mut offset = 0;

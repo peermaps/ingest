@@ -7,6 +7,8 @@ pub use error::*;
 mod record;
 use osmxq::{XQ,RW,Record};
 mod value;
+mod progress;
+pub use progress::Progress;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;

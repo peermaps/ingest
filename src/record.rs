@@ -96,6 +96,7 @@ impl Record for Decoded {
         },
       }
     }
+    //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
     buf
   }
   fn unpack(buf: &[u8]) -> Result<HashMap<RecordId,Self>,Error> where Self: Sized {
@@ -159,6 +160,7 @@ impl Record for Decoded {
         },
       });
     }
+    //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
     Ok(records)
   }
 }
