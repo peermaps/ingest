@@ -1,5 +1,6 @@
 #![feature(backtrace)]
-use peermaps_ingest::{Ingest,Phase,EDB};
+use peermaps_ingest::{Ingest,EDB,Progress};
+use async_std::{prelude::*,sync::{Arc,RwLock},task,stream};
 use osmxq::XQ;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
@@ -31,47 +32,6 @@ async fn run() -> Result<(),Error> {
     return Ok(());
   }
 
-  let mut counter: u64 = 0;
-  let start_time = std::time::Instant::now();
-  let mut phase_time = std::time::Instant::now();
-  let mut last_print = std::time::Instant::now();
-  let mut last_phase: Option<Phase> = None;
-  let mut last_count: u64 = 0;
-  let mut rate: Option<f64> = None;
-  let reporter = Box::new(move |phase: Phase, res| {
-    /*
-    let mut should_print = false;
-    if let Err(e) = res {
-      eprintln!["\x1b[1K\r[{}] {} error: {}",
-        hms(start_time.elapsed().as_secs_f64() as u32), phase.to_string(), e];
-      should_print = true;
-    } else {
-      counter += 1;
-      if last_print.elapsed().as_secs_f64() >= 1.0 {
-        should_print = true;
-        rate = Some((counter-last_count) as f64 / last_print.elapsed().as_secs_f64());
-        last_print = std::time::Instant::now();
-        last_count = counter;
-      }
-      if last_phase.as_ref().and_then(|p| Some(p != &phase)).unwrap_or(false) {
-        eprintln!["\x1b[1K\r[{}] {} {} ({:.0}/s)", hms(start_time.elapsed().as_secs_f64() as u32),
-          last_phase.as_ref().unwrap().to_string(), counter,
-          counter as f64/phase_time.elapsed().as_secs_f64()];
-        counter = 1;
-        rate = None;
-        should_print = true;
-        phase_time = std::time::Instant::now();
-      }
-    }
-    if should_print {
-      let elapsed = start_time.elapsed().as_secs_f64() as u32;
-      eprint!["\x1b[1K\r[{}] {} {} ({})", hms(elapsed), phase.to_string(), counter,
-        match rate { None => "---".to_string(), Some(x) => format!["{:.0}/s", x] }];
-    }
-    last_phase = Some(phase);
-    */
-  });
-
   match args.get(1).map(|x| x.as_str()) {
     None => print!["{}", usage(&args)],
     Some("help") => print!["{}", usage(&args)],
@@ -88,14 +48,17 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
-      ).reporter(reporter);
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        &["pbf","process"]
+      );
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
+      let mut p = Monitor::open(ingest.progress.clone());
       ingest.load_pbf(pbf_stream).await?;
       ingest.process().await;
+      p.end().await;
       eprintln![""];
     },
     Some("pbf") => {
@@ -110,13 +73,16 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
-      ).reporter(reporter);
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        &["pbf"]
+      );
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
+      let mut p = Monitor::open(ingest.progress.clone());
       ingest.load_pbf(pbf_stream).await?;
+      p.end().await;
       eprintln![""];
     },
     Some("process") => {
@@ -127,9 +93,12 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
-      ).reporter(reporter);
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        &["process"]
+      );
+      let mut p = Monitor::open(ingest.progress.clone());
       ingest.process().await;
+      p.end().await;
       eprintln![""];
     },
     Some("changeset") => {
@@ -145,7 +114,7 @@ async fn run() -> Result<(),Error> {
       let mut ingest = Ingest::new(
         XQ::open_from_path(&xq_dir.unwrap()).await?,
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
-      ).reporter(reporter);
+      );
       let o5c_stream: Box<dyn io::Read+Send+Unpin> = match o5c_file.unwrap().as_str() {
         "-" => Box::new(io::stdin()),
         x => Box::new(File::open(x).await?),
@@ -224,9 +193,47 @@ fn get_dirs(argv: &argmap::Map) -> (Option<String>,Option<String>) {
   (xq_dir,edb_dir)
 }
 
-fn hms(t: u32) -> String {
-  let s = t % 60;
-  let m = (t / 60) % 60;
-  let h = t / 3600;
-  format!["{:02}:{:02}:{:02}", h, m, s]
+pub struct Monitor {
+  stop: Arc<RwLock<bool>>,
+}
+
+impl Monitor {
+  pub fn open(progress: Arc<RwLock<Progress>>) -> Self {
+    let p = progress.clone();
+    let stop = Arc::new(RwLock::new(false));
+    let s = stop.clone();
+    task::spawn(async move {
+      let mut interval = stream::interval(std::time::Duration::from_secs(1));
+      let mut first = true;
+      while let Some(_) = interval.next().await {
+        {
+          let pr = p.read().await;
+          Self::print(&pr, first);
+          first = false;
+        }
+        p.write().await.tick();
+        if *s.read().await {
+          let pr = p.read().await;
+          Self::print(&pr, false);
+          break
+        }
+      }
+    });
+    Self { stop }
+  }
+  fn print(p: &Progress, first: bool) {
+    let n = p.stages.len();
+    if first {
+      eprint!["{}", p];
+    } else {
+      let mut parts = vec!["\x1b[K"];
+      for _ in 0..n {
+        parts.push("\x1b[1A\x1b[K");
+      }
+      eprint!["{}{}", parts.join(""), p];
+    }
+  }
+  pub async fn end(&mut self) {
+    *self.stop.write().await = true;
+  }
 }

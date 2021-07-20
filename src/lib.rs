@@ -5,7 +5,7 @@ pub use encoder::*;
 pub mod error;
 pub use error::*;
 mod record;
-use osmxq::{XQ,RW,Record};
+use osmxq::{XQ,Record};
 mod value;
 mod progress;
 pub use progress::Progress;
@@ -14,7 +14,7 @@ pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
 use std::collections::HashMap;
-use async_std::{sync::{Arc,Mutex},task,channel};
+use async_std::{sync::{Arc,Mutex,RwLock},task,channel};
 use futures::future::join_all;
 
 type NodeDeps = HashMap<u64,(f32,f32)>;
@@ -26,47 +26,24 @@ type P = (eyros::Coord<f32>,eyros::Coord<f32>);
 type V = value::V;
 pub type EDB = eyros::DB<random_access_disk::RandomAccessDisk,T,P,V>;
 
-#[derive(Debug,Clone,PartialEq)]
-pub enum Phase {
-  Pbf(),
-  Process(),
-  Changeset(),
-}
-
-impl ToString for Phase {
-  fn to_string(&self) -> String {
-    match self {
-      Phase::Pbf() => "pbf",
-      Phase::Process() => "process",
-      Phase::Changeset() => "changeset",
-    }.to_string()
-  }
-}
-
-type Reporter = Arc<Mutex<Option<Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>>>>;
 pub struct Ingest<S> where S: osmxq::RW {
   xq: Arc<Mutex<XQ<S,R>>>,
   db: EDB,
   place_other: u64,
-  reporter: Reporter,
+  pub progress: Arc<RwLock<Progress>>,
 }
 
 impl<S> Ingest<S> where S: osmxq::RW+'static {
-  pub fn new(xq: XQ<S,R>, db: EDB) -> Self {
+  pub fn new(xq: XQ<S,R>, db: EDB, stages: &[&str]) -> Self {
     Self {
       xq: Arc::new(Mutex::new(xq)),
       db,
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
-      reporter: Arc::new(Mutex::new(None)),
+      progress: Arc::new(RwLock::new(Progress::new(stages))),
     }
   }
-
-  pub fn reporter(mut self, f: Box<dyn FnMut(Phase, Result<(),Error>) -> ()+Send+Sync>) -> Self {
-    self.reporter = Arc::new(Mutex::new(Some(f)));
-    self
-  }
-
   pub async fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
+    self.progress.write().await.start("pbf");
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
     let mut work = vec![];
     work.push(task::spawn(async move {
@@ -81,31 +58,25 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
       sender.close();
     }));
     {
-      async fn add<S>(xqc: Arc<Mutex<XQ<S,Decoded>>>, records: &[Decoded], reporter: Reporter) where S: RW {
-        let mut xq = xqc.lock().await;
-        if let Some(f) = reporter.lock().await.as_mut() {
-          if let Err(err) = xq.add_records(&records).await {
-            f(Phase::Pbf(), Err(err.into()));
-          } else {
-            f(Phase::Pbf(), Ok(()));
-          }
-        } else {
-          if let Err(_) = xq.add_records(&records).await {}
-        }
-      }
       let xqc = self.xq.clone();
-      let reporter = self.reporter.clone();
+      let progress = self.progress.clone();
       work.push(task::spawn(async move {
         let mut records = Vec::with_capacity(100_000);
         while let Ok(record) = receiver.recv().await {
           records.push(record);
           if records.len() >= 100_000 {
-            add(xqc.clone(), &records, reporter.clone()).await;
+            if let Err(err) = xqc.lock().await.add_records(&records).await {
+              progress.write().await.push_err("pbf", &err);
+            }
+            progress.write().await.add("pbf", records.len());
             records.clear();
           }
         }
         if !records.is_empty() {
-          add(xqc.clone(), &records, reporter.clone()).await;
+          if let Err(err) = xqc.lock().await.add_records(&records).await {
+            progress.write().await.push_err("pbf", &err);
+          }
+          progress.write().await.add("pbf", records.len());
         }
         {
           let mut xq = xqc.lock().await;
@@ -115,15 +86,18 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
       }));
     }
     join_all(work).await;
+    self.progress.write().await.end("pbf");
     Ok(())
   }
 
   // loop over the db, denormalize the records, georender-pack the data into eyros
   pub async fn process(&mut self) -> () {
+    self.progress.write().await.start("process");
     let mut xq = self.xq.lock().await;
     let quad_ids = xq.get_quad_ids();
     for q_id in quad_ids {
       let records = xq.read_quad_denorm(q_id).await.unwrap();
+      let rlen = records.len();
       let mut batch = Vec::with_capacity(records.len());
       for (_r_id,r,deps) in records {
         match &r {
@@ -207,7 +181,9 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
         }
       }
       self.db.batch(&batch).await.unwrap();
+      self.progress.write().await.add("process", rlen);
     }
     self.db.sync().await.unwrap();
+    self.progress.write().await.end("process");
   }
 }

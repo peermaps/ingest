@@ -1,8 +1,7 @@
+use crate::Error;
 use std::collections::{HashMap,VecDeque};
 
 pub struct Progress {
-  pub error_size: usize,
-  pub sample_size: usize,
   pub stages: Vec<String>,
   pub info: HashMap<String,Info>,
 }
@@ -16,6 +15,48 @@ impl std::fmt::Display for Progress {
   }
 }
 
+impl Progress {
+  pub fn new(stages: &[&str]) -> Self {
+    let mut info = HashMap::new();
+    for s in stages.iter() {
+      info.insert(s.to_string(), Info::new(s));
+    }
+    Self {
+      stages: stages.iter().map(|s| s.to_string()).collect(),
+      info,
+    }
+  }
+  pub fn add(&mut self, label: &str, x: usize) {
+    if let Some(info) = self.info.get_mut(label) {
+      info.add(x);
+    }
+  }
+  pub fn push_err(&mut self, label: &str, err: &Error) {
+    if let Some(info) = self.info.get_mut(label) {
+      info.push_err(err);
+    }
+  }
+  pub fn start(&mut self, label: &str) {
+    if let Some(info) = self.info.get_mut(label) {
+      info.start();
+    } else {
+      panic!["bad start label {}", label];
+    }
+  }
+  pub fn end(&mut self, label: &str) {
+    if let Some(info) = self.info.get_mut(label) {
+      info.end();
+    } else {
+      panic!["bad end label {}", label];
+    }
+  }
+  pub fn tick(&mut self) {
+    for (_,info) in self.info.iter_mut() {
+      info.tick();
+    }
+  }
+}
+
 pub struct Info {
   label: String,
   start: Option<std::time::Instant>,
@@ -23,6 +64,8 @@ pub struct Info {
   samples: VecDeque<(std::time::Duration,u64)>,
   count: u64,
   sample_size: usize,
+  errors: VecDeque<String>,
+  error_size: usize,
 }
 
 impl std::fmt::Display for Info {
@@ -32,12 +75,22 @@ impl std::fmt::Display for Info {
       (Some(s),None) => Some(s.elapsed()),
       _ => None
     });
-    if let (Some(first),Some(last)) = (self.samples.front(),self.samples.back()) {
+    if let (Some(s),Some(e)) = (self.start,self.end) {
+      let rate = (self.count as f64) / e.duration_since(s).as_secs_f64();
+      write![f, "[{:<9} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+    } else if let (Some(first),Some(last)) = (self.samples.front(),self.samples.back()) {
       let e = first.0.as_secs_f64() - last.0.as_secs_f64();
-      let rate = ((first.1 - last.1) as f64) / e;
-      write![f, "[{} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+      if e < 0.001 && self.start.is_some() {
+        let rate = (self.count as f64) / self.start.unwrap().elapsed().as_secs_f64();
+        write![f, "[{:<9} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+      } else if e < 0.001 {
+        write![f, "[{:<9} {}] {:^10} ({:^6}/s)", self.label, d, self.count, "---"]
+      } else {
+        let rate = ((first.1 - last.1) as f64) / e;
+        write![f, "[{:<9} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+      }
     } else {
-      write![f, "[{} {}] {:^10} ({:^6}/s)", self.label, d, "---", "---"]
+      write![f, "[{:<9} {}] {:^10} ({:^6}/s)", self.label, d, "---", "---"]
     }
   }
 }
@@ -49,19 +102,30 @@ impl Info {
       start: None,
       end: None,
       samples: VecDeque::with_capacity(10),
+      errors: VecDeque::with_capacity(10),
       count: 0,
       sample_size: 10,
+      error_size: 10,
     }
   }
   pub fn add(&mut self, x: usize) {
     self.count += x as u64;
   }
+  pub fn push_err(&mut self, err: &Error) {
+    self.errors.push_front(format!["{}", err]);
+    self.errors.truncate(self.error_size);
+  }
+  pub fn start(&mut self) {
+    self.start = Some(std::time::Instant::now());
+  }
+  pub fn end(&mut self) {
+    self.end = Some(std::time::Instant::now());
+  }
   pub fn tick(&mut self) {
+    if self.end.is_some() { return }
     if let Some(start) = &self.start {
       self.samples.push_front((start.elapsed(),self.count));
       self.samples.truncate(self.sample_size);
-    } else {
-      self.start = Some(std::time::Instant::now());
     }
   }
 }
