@@ -44,7 +44,7 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
   }
   pub async fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
     self.progress.write().await.start("pbf");
-    let (sender,receiver) = channel::bounded::<Decoded>(1_000);
+    let (sender,receiver) = channel::bounded::<Decoded>(1_000_000);
     let mut work = vec![];
     work.push(task::spawn(async move {
       let sc = sender.clone();
