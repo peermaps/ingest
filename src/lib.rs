@@ -152,9 +152,9 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
                 node_deps.insert(d.get_id()/3, p);
                 continue;
               }
-              let drefs = d.get_refs();
+              let drefs = d.get_refs().iter().map(|dr| dr/3).collect::<Vec<u64>>();
               if drefs.is_empty() { continue }
-              way_deps.insert(d.get_id()/3, drefs.to_vec());
+              way_deps.insert(d.get_id()/3, drefs);
             }
             let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
             if node_deps.len() <= 1 { continue }
