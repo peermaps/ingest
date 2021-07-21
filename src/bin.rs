@@ -47,7 +47,10 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
+        XQ::from_fields(
+          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
+          get_fields(&argv)
+        ).await?,
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
         &["pbf","process"]
       );
@@ -72,7 +75,10 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
+        XQ::from_fields(
+          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
+          get_fields(&argv)
+        ).await?,
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
         &["pbf"]
       );
@@ -92,7 +98,10 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
+        XQ::from_fields(
+          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
+          get_fields(&argv)
+        ).await?,
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
         &["process"]
       );
@@ -112,7 +121,10 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
+        XQ::from_fields(
+          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
+          get_fields(&argv)
+        ).await?,
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
       );
       let o5c_stream: Box<dyn io::Read+Send+Unpin> = match o5c_file.unwrap().as_str() {
@@ -236,4 +248,30 @@ impl Monitor {
   pub async fn end(&mut self) {
     *self.stop.write().await = true;
   }
+}
+
+fn get_fields(argv: &argmap::Map) -> osmxq::Fields {
+  let mut fields = osmxq::Fields::default();
+  if let Some(x) = argv.get("id_block_size").and_then(|xs| xs.first()) {
+    fields.id_block_size = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("id_cache_size").and_then(|xs| xs.first()) {
+    fields.id_cache_size = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("id_flush_size").and_then(|xs| xs.first()) {
+    fields.id_flush_size = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("quad_block_size").and_then(|xs| xs.first()) {
+    fields.quad_block_size = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("quad_cache_size").and_then(|xs| xs.first()) {
+    fields.quad_cache_size = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("quad_flush_size").and_then(|xs| xs.first()) {
+    fields.quad_flush_size = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("missing_flush_size").and_then(|xs| xs.first()) {
+    fields.missing_flush_size = x.parse().unwrap();
+  }
+  fields
 }
