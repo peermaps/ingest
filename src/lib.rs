@@ -103,14 +103,16 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
         match &r {
           Decoded::Node(node) => {
             if node.feature_type == self.place_other { continue }
-            let encoded = georender_pack::encode::node_from_parsed(
+            let r_encoded = georender_pack::encode::node_from_parsed(
               node.id*3+0, (node.lon,node.lat), node.feature_type, &node.labels
-            ).unwrap();
-            if encoded.is_empty() { continue }
-            batch.push(eyros::Row::Insert(
-              (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)),
-              encoded.into()
-            ));
+            );
+            if let Ok(encoded) = r_encoded {
+              if encoded.is_empty() { continue }
+              batch.push(eyros::Row::Insert(
+                (eyros::Coord::Scalar(node.lon),eyros::Coord::Scalar(node.lat)),
+                encoded.into()
+              ));
+            }
           },
           Decoded::Way(way) => {
             if way.feature_type == self.place_other { continue }
@@ -121,21 +123,24 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
               }
             }
             let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
+            if pdeps.len() <= 1 { continue }
             for (lon,lat) in pdeps.values() {
               bbox.0 = bbox.0.min(*lon);
               bbox.1 = bbox.1.min(*lat);
               bbox.2 = bbox.2.max(*lon);
               bbox.3 = bbox.3.max(*lat);
             }
-            let encoded = georender_pack::encode::way_from_parsed(
+            let r_encoded = georender_pack::encode::way_from_parsed(
               way.id*3+1, way.feature_type, way.is_area, &way.labels, &way.refs, &pdeps
-            ).unwrap();
-            if encoded.is_empty() { continue }
-            let point = (
-              eyros::Coord::Interval(bbox.0,bbox.2),
-              eyros::Coord::Interval(bbox.1,bbox.3),
             );
-            batch.push(eyros::Row::Insert(point, encoded.into()));
+            if let Ok(encoded) = r_encoded {
+              if encoded.is_empty() { continue }
+              let point = (
+                eyros::Coord::Interval(bbox.0,bbox.2),
+                eyros::Coord::Interval(bbox.1,bbox.3),
+              );
+              batch.push(eyros::Row::Insert(point, encoded.into()));
+            }
           },
           Decoded::Relation(relation) => {
             if relation.feature_type == self.place_other { continue }
@@ -144,14 +149,15 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
 
             for d in deps {
               if let Some(p) = d.get_position() {
-                node_deps.insert(d.get_id(), p);
+                node_deps.insert(d.get_id()/3, p);
                 continue;
               }
               let drefs = d.get_refs();
               if drefs.is_empty() { continue }
-              way_deps.insert(d.get_id(), drefs.to_vec());
+              way_deps.insert(d.get_id()/3, drefs.to_vec());
             }
             let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
+            if node_deps.len() <= 1 { continue }
             for p in node_deps.values() {
               bbox.0 = bbox.0.min(p.0);
               bbox.1 = bbox.1.min(p.1);
@@ -168,15 +174,17 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
                 georender_pack::MemberType::Way()
               )
             }).collect::<Vec<_>>();
-            let encoded = georender_pack::encode::relation_from_parsed(
+            let r_encoded = georender_pack::encode::relation_from_parsed(
               relation.id*3+2, relation.feature_type, relation.is_area,
               &relation.labels, &members, &node_deps, &way_deps
-            ).unwrap();
-            let point = (
-              eyros::Coord::Interval(bbox.0,bbox.2),
-              eyros::Coord::Interval(bbox.1,bbox.3),
             );
-            batch.push(eyros::Row::Insert(point, encoded.into()));
+            if let Ok(encoded) = r_encoded {
+              let point = (
+                eyros::Coord::Interval(bbox.0,bbox.2),
+                eyros::Coord::Interval(bbox.1,bbox.3),
+              );
+              batch.push(eyros::Row::Insert(point, encoded.into()));
+            }
           },
         }
       }
