@@ -77,20 +77,20 @@ impl std::fmt::Display for Info {
     });
     if let (Some(s),Some(e)) = (self.start,self.end) {
       let rate = (self.count as f64) / e.duration_since(s).as_secs_f64();
-      write![f, "[{:<9} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+      write![f, "[{:<9} {}] {:>10} ({:>7.0}/s)", self.label, d, self.count, rate]
     } else if let (Some(first),Some(last)) = (self.samples.front(),self.samples.back()) {
       let e = first.0.as_secs_f64() - last.0.as_secs_f64();
       if e < 0.001 && self.start.is_some() {
         let rate = (self.count as f64) / self.start.unwrap().elapsed().as_secs_f64();
-        write![f, "[{:<9} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+        write![f, "[{:<9} {}] {:>10} ({:>7.0}/s)", self.label, d, self.count, rate]
       } else if e < 0.001 {
-        write![f, "[{:<9} {}] {:^10} ({:^6}/s)", self.label, d, self.count, "---"]
+        write![f, "[{:<9} {}] {:^10} ({:^7}/s)", self.label, d, self.count, "---"]
       } else {
         let rate = ((first.1 - last.1) as f64) / e;
-        write![f, "[{:<9} {}] {:>10} ({:>6.0}/s)", self.label, d, self.count, rate]
+        write![f, "[{:<9} {}] {:>10} ({:>7.0}/s)", self.label, d, self.count, rate]
       }
     } else {
-      write![f, "[{:<9} {}] {:^10} ({:^6}/s)", self.label, d, "---", "---"]
+      write![f, "[{:<9} {}] {:^10} ({:^7}/s)", self.label, d, "---", "---"]
     }
   }
 }
@@ -104,7 +104,7 @@ impl Info {
       samples: VecDeque::with_capacity(10),
       errors: VecDeque::with_capacity(10),
       count: 0,
-      sample_size: 10,
+      sample_size: 20,
       error_size: 10,
     }
   }

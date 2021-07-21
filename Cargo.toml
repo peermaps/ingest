@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 
 [[bin]]
 name = "peermaps-ingest"
-path = "src/bin/ingest.rs"
+path = "src/bin.rs"
 
 [dependencies]
 eyros = "4.2.2"
