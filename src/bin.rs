@@ -270,6 +270,12 @@ fn get_fields(argv: &argmap::Map) -> osmxq::Fields {
   if let Some(x) = argv.get("quad_flush_size").and_then(|xs| xs.first()) {
     fields.quad_flush_size = x.parse().unwrap();
   }
+  if let Some(x) = argv.get("quad_flush_top").and_then(|xs| xs.first()) {
+    fields.quad_flush_top = x.parse().unwrap();
+  }
+  if let Some(x) = argv.get("quad_flush_max_age").and_then(|xs| xs.first()) {
+    fields.quad_flush_max_age = x.parse().unwrap();
+  }
   if let Some(x) = argv.get("missing_flush_size").and_then(|xs| xs.first()) {
     fields.missing_flush_size = x.parse().unwrap();
   }
