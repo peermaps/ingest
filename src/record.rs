@@ -30,7 +30,6 @@ impl Record for Decoded {
   }
   fn pack(records: &HashMap<RecordId,Self>) -> Vec<u8> where Self: Sized {
     let mut size = 0;
-    size += varint::length(records.len() as u64);
     for (r_id,r) in records {
       size += varint::length(*r_id);
       match &r {
@@ -62,7 +61,6 @@ impl Record for Decoded {
     }
     let mut buf = vec![0u8;size];
     let mut offset = 0;
-    offset += varint::encode(records.len() as u64, &mut buf[offset..]).unwrap();
     for (r_id,r) in records {
       //assert_eq![*r_id, r.get_id(), "r_id != r.get_id()"];
       offset += varint::encode(*r_id, &mut buf[offset..]).unwrap();
@@ -99,13 +97,10 @@ impl Record for Decoded {
     //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
     buf
   }
-  fn unpack(buf: &[u8]) -> Result<HashMap<RecordId,Self>,Error> where Self: Sized {
-    let mut records = HashMap::new();
-    if buf.is_empty() { return Ok(records) }
+  fn unpack(buf: &[u8], records: &mut HashMap<RecordId,Self>) -> Result<usize,Error> where Self: Sized {
+    if buf.is_empty() { return Ok(0) }
     let mut offset = 0;
-    let (s,record_len) = varint::decode(&buf[offset..]).unwrap();
-    offset += s;
-    for _ in 0..record_len {
+    while offset < buf.len() {
       let (s,xid) = varint::decode(&buf[offset..]).unwrap();
       offset += s;
       let id = xid/3;
@@ -161,6 +156,6 @@ impl Record for Decoded {
       });
     }
     //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
-    Ok(records)
+    Ok(offset)
   }
 }

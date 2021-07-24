@@ -251,39 +251,45 @@ impl Monitor {
 }
 
 fn get_fields(argv: &argmap::Map) -> osmxq::Fields {
+  fn parse<T: std::str::FromStr>(x: &str) -> T where <T as std::str::FromStr>::Err: std::fmt::Debug {
+    x.replace("_","").parse().unwrap()
+  }
   let mut fields = osmxq::Fields::default();
   if let Some(x) = argv.get("id_block_size").and_then(|xs| xs.first()) {
-    fields.id_block_size = x.parse().unwrap();
+    fields.id_block_size = parse(x);
   }
   if let Some(x) = argv.get("id_cache_size").and_then(|xs| xs.first()) {
-    fields.id_cache_size = x.parse().unwrap();
+    fields.id_cache_size = parse(x);
   }
   if let Some(x) = argv.get("id_flush_size").and_then(|xs| xs.first()) {
-    fields.id_flush_size = x.parse().unwrap();
+    fields.id_flush_size = parse(x);
   }
   if let Some(x) = argv.get("id_flush_top").and_then(|xs| xs.first()) {
-    fields.id_flush_top = x.parse().unwrap();
+    fields.id_flush_top = parse(x);
   }
   if let Some(x) = argv.get("id_flush_max_age").and_then(|xs| xs.first()) {
-    fields.id_flush_max_age = x.parse().unwrap();
-  }
-  if let Some(x) = argv.get("quad_block_size").and_then(|xs| xs.first()) {
-    fields.quad_block_size = x.parse().unwrap();
+    fields.id_flush_max_age = parse(x);
   }
   if let Some(x) = argv.get("quad_cache_size").and_then(|xs| xs.first()) {
-    fields.quad_cache_size = x.parse().unwrap();
+    fields.quad_cache_size = parse(x);
+  }
+  //if let Some(x) = argv.get("record_cache_size").and_then(|xs| xs.first()) {
+  //  fields.record_cache_size = parse(x);
+  //}
+  if let Some(x) = argv.get("quad_block_size").and_then(|xs| xs.first()) {
+    fields.quad_block_size = parse(x);
   }
   if let Some(x) = argv.get("quad_flush_size").and_then(|xs| xs.first()) {
-    fields.quad_flush_size = x.parse().unwrap();
+    fields.quad_flush_size = parse(x);
   }
   if let Some(x) = argv.get("quad_flush_top").and_then(|xs| xs.first()) {
-    fields.quad_flush_top = x.parse().unwrap();
+    fields.quad_flush_top = parse(x);
   }
   if let Some(x) = argv.get("quad_flush_max_age").and_then(|xs| xs.first()) {
-    fields.quad_flush_max_age = x.parse().unwrap();
+    fields.quad_flush_max_age = parse(x);
   }
   if let Some(x) = argv.get("missing_flush_size").and_then(|xs| xs.first()) {
-    fields.missing_flush_size = x.parse().unwrap();
+    fields.missing_flush_size = parse(x);
   }
   fields
 }
