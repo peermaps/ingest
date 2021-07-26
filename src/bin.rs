@@ -21,7 +21,7 @@ async fn main() -> Result<(),Error> {
 
 async fn run() -> Result<(),Error> {
   let (args,argv) = argmap::new()
-    .booleans(&["help","h"])
+    .booleans(&["help","h","defaults","d"])
     .parse(std::env::args());
   if argv.contains_key("help") || argv.contains_key("h") {
     print!["{}", usage(&args)];
@@ -29,6 +29,10 @@ async fn run() -> Result<(),Error> {
   }
   if argv.contains_key("version") || argv.contains_key("v") {
     println!["{}", get_version()];
+    return Ok(());
+  }
+  if argv.contains_key("defaults") || argv.contains_key("d") {
+    show_defaults();
     return Ok(());
   }
 
@@ -157,16 +161,22 @@ fn usage(args: &[String]) -> String {
       -e, --edb     eyros db dir to write spatial data
       -o, --outdir  write level and eyros db in this dir in xq/ and edb/
 
+      Consult --defaults for additional arguments.
+
     pbf - parse pbf and write normalized data to level db
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
       -x, --xq      osmxq dir to write normalized quad data
       -e, --edb     eyros db dir to write spatial data
       -o, --outdir  write level and eyros db in this dir in xq/ and edb/
 
+      Consult --defaults for additional arguments.
+
     process - write georender-pack data to eyros db from populated level db
       -x, --xq      osmxq dir to write normalized quad data
       -e, --edb     eyros db dir to write spatial data
       -o, --outdir  write level and eyros db in this dir in xq/ and edb/
+
+      Consult --defaults for additional arguments.
 
     changeset - ingest data from an o5c changeset
       -f, --o5c     o5c changeset file or "-" for stdin (default)
@@ -176,6 +186,7 @@ fn usage(args: &[String]) -> String {
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
+    -d, --defaults Print default osmxq field values.
 
   "#], args.get(0).unwrap_or(&"???".to_string()), get_version()]
 }
@@ -254,39 +265,59 @@ fn get_fields(argv: &argmap::Map) -> osmxq::Fields {
   fn parse<T: std::str::FromStr>(x: &str) -> T where <T as std::str::FromStr>::Err: std::fmt::Debug {
     x.replace("_","").parse().unwrap()
   }
+  fn get<'a>(argv: &'a argmap::Map, x: &str) -> Option<&'a String> {
+    argv.get(x)
+      .or_else(|| argv.get(&x.replace("-","_")))
+      .and_then(|xs| xs.first())
+  }
   let mut fields = osmxq::Fields::default();
-  if let Some(x) = argv.get("id_block_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "id_block_size") {
     fields.id_block_size = parse(x);
   }
-  if let Some(x) = argv.get("id_cache_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "id_cache_size") {
     fields.id_cache_size = parse(x);
   }
-  if let Some(x) = argv.get("id_flush_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "id_flush_size") {
     fields.id_flush_size = parse(x);
   }
-  if let Some(x) = argv.get("id_flush_top").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "id_flush_top") {
     fields.id_flush_top = parse(x);
   }
-  if let Some(x) = argv.get("id_flush_max_age").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "id_flush_max_age") {
     fields.id_flush_max_age = parse(x);
   }
-  if let Some(x) = argv.get("record_cache_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "record_cache_size") {
     fields.record_cache_size = parse(x);
   }
-  if let Some(x) = argv.get("quad_block_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "quad_block_size") {
     fields.quad_block_size = parse(x);
   }
-  if let Some(x) = argv.get("quad_flush_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "quad_flush_size") {
     fields.quad_flush_size = parse(x);
   }
-  if let Some(x) = argv.get("quad_flush_top").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "quad_flush_top") {
     fields.quad_flush_top = parse(x);
   }
-  if let Some(x) = argv.get("quad_flush_max_age").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "quad_flush_max_age") {
     fields.quad_flush_max_age = parse(x);
   }
-  if let Some(x) = argv.get("missing_flush_size").and_then(|xs| xs.first()) {
+  if let Some(x) = get(argv, "missing_flush_size") {
     fields.missing_flush_size = parse(x);
   }
   fields
+}
+
+fn show_defaults() {
+  let fields = osmxq::Fields::default();
+  println!["--id_block_size={}", fields.id_block_size];
+  println!["--id_cache_size={}", fields.id_cache_size];
+  println!["--id_flush_size={}", fields.id_flush_size];
+  println!["--id_flush_top={}", fields.id_flush_top];
+  println!["--id_flush_max_age={}", fields.id_flush_max_age];
+  println!["--record_cache_size={}", fields.record_cache_size];
+  println!["--quad_block_size={}", fields.quad_block_size];
+  println!["--quad_flush_size={}", fields.quad_flush_size];
+  println!["--quad_flush_top={}", fields.quad_flush_top];
+  println!["--quad_flush_max_age={}", fields.quad_flush_max_age];
+  println!["--missing_flush_size={}", fields.missing_flush_size];
 }
