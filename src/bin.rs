@@ -66,7 +66,6 @@ async fn run() -> Result<(),Error> {
       ingest.load_pbf(pbf_stream).await?;
       ingest.process().await;
       p.end().await;
-      eprintln![""];
     },
     Some("pbf") => {
       let stdin_file = "-".to_string();
@@ -93,7 +92,6 @@ async fn run() -> Result<(),Error> {
       let mut p = Monitor::open(ingest.progress.clone());
       ingest.load_pbf(pbf_stream).await?;
       p.end().await;
-      eprintln![""];
     },
     Some("process") => {
       let (xq_dir, edb_dir) = get_dirs(&argv);
@@ -112,7 +110,6 @@ async fn run() -> Result<(),Error> {
       let mut p = Monitor::open(ingest.progress.clone());
       ingest.process().await;
       p.end().await;
-      eprintln![""];
     },
     Some("changeset") => {
       unimplemented![]
