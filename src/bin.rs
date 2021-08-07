@@ -21,7 +21,7 @@ async fn main() -> Result<(),Error> {
 
 async fn run() -> Result<(),Error> {
   let (args,argv) = argmap::new()
-    .booleans(&["help","h","defaults","d"])
+    .booleans(&["help","h","defaults","d","no-monitor"])
     .parse(std::env::args());
   if argv.contains_key("help") || argv.contains_key("h") {
     print!["{}", usage(&args)];
@@ -62,10 +62,15 @@ async fn run() -> Result<(),Error> {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
-      let mut p = Monitor::open(ingest.progress.clone());
-      ingest.load_pbf(pbf_stream).await?;
-      ingest.process().await;
-      p.end().await;
+      if argv.contains_key("--no-monitor") {
+        ingest.load_pbf(pbf_stream).await?;
+        ingest.process().await;
+      } else {
+        let mut p = Monitor::open(ingest.progress.clone());
+        ingest.load_pbf(pbf_stream).await?;
+        ingest.process().await;
+        p.end().await;
+      }
     },
     Some("pbf") => {
       let stdin_file = "-".to_string();
@@ -89,9 +94,13 @@ async fn run() -> Result<(),Error> {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
-      let mut p = Monitor::open(ingest.progress.clone());
-      ingest.load_pbf(pbf_stream).await?;
-      p.end().await;
+      if argv.contains_key("--no-monitor") {
+        ingest.load_pbf(pbf_stream).await?;
+      } else {
+        let mut p = Monitor::open(ingest.progress.clone());
+        ingest.load_pbf(pbf_stream).await?;
+        p.end().await;
+      }
     },
     Some("process") => {
       let (xq_dir, edb_dir) = get_dirs(&argv);
@@ -107,9 +116,13 @@ async fn run() -> Result<(),Error> {
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
         &["process"]
       );
-      let mut p = Monitor::open(ingest.progress.clone());
-      ingest.process().await;
-      p.end().await;
+      if argv.contains_key("--no-monitor") {
+        ingest.process().await;
+      } else {
+        let mut p = Monitor::open(ingest.progress.clone());
+        ingest.process().await;
+        p.end().await;
+      }
     },
     Some("changeset") => {
       unimplemented![]
