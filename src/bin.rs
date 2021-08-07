@@ -62,7 +62,7 @@ async fn run() -> Result<(),Error> {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
-      if argv.contains_key("--no-monitor") {
+      if argv.contains_key("no-monitor") {
         ingest.load_pbf(pbf_stream).await?;
         ingest.process().await;
       } else {
@@ -94,7 +94,7 @@ async fn run() -> Result<(),Error> {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
-      if argv.contains_key("--no-monitor") {
+      if argv.contains_key("no-monitor") {
         ingest.load_pbf(pbf_stream).await?;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
@@ -116,7 +116,7 @@ async fn run() -> Result<(),Error> {
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
         &["process"]
       );
-      if argv.contains_key("--no-monitor") {
+      if argv.contains_key("no-monitor") {
         ingest.process().await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
