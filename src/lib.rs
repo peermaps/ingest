@@ -63,18 +63,24 @@ impl Ingest {
             node_sender.send((offset,len)).await.unwrap();
           }
         }
+        node_sender.close();
         for (offset,len) in scan.get_way_blob_offsets() {
           way_sender.send((offset,len)).await.unwrap();
         }
+        way_sender.close();
         for (offset,len) in scan.get_relation_blob_offsets() {
           relation_sender.send((offset,len)).await.unwrap();
         }
+        relation_sender.close();
       }));
       scan_table
     };
 
+    let mnactive = Arc::new(Mutex::new(0));
     for receiver in &[node_receiver,way_receiver,relation_receiver] {
       for _ in 0..nproc {
+        let nactive = mnactive.clone();
+        *mnactive.lock().await += 1;
         let cache = Cache::new(scan_table.clone());
         let h = std::fs::File::open(pbf_file).unwrap();
         let mut parser = Parser::new(Box::new(h));
@@ -217,6 +223,14 @@ impl Ingest {
               }
             }
           }
+          bs.send(batch.clone()).await.unwrap();
+          batch.clear();
+
+          {
+            let mut n = nactive.lock().await;
+            *n -= 1;
+            if *n == 0 { bs.close(); }
+          }
         }));
       }
     }
@@ -236,11 +250,10 @@ impl Ingest {
             sync_count = 0;
           }
         }
+        db.sync().await.unwrap();
       }));
     }
     join_all(work).await;
-
-    self.db.lock().await.sync().await.unwrap();
     self.progress.write().await.end("ingest");
   }
 }
