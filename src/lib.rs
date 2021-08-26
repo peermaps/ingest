@@ -8,7 +8,8 @@ pub use error::*;
 mod value;
 mod progress;
 pub use progress::Progress;
-use osmpbf_parser::{Parser,Scan,element};
+use osmpbf_parser::{Parser,Scan,ScanTable,element};
+use lru::LruCache;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
@@ -71,9 +72,10 @@ impl Ingest {
       }));
       scan_table
     };
-    // todo: cache (offset,len) => items
+
     for receiver in &[node_receiver,way_receiver,relation_receiver] {
       for _ in 0..nproc {
+        let cache = Cache::new(scan_table.clone());
         let h = std::fs::File::open(pbf_file).unwrap();
         let mut parser = Parser::new(Box::new(h));
         let place_other = self.place_other.clone();
@@ -83,14 +85,7 @@ impl Ingest {
         work.push(task::spawn(async move {
           let mut batch = vec![];
           for (offset,len) in recv.recv().await {
-            let blob = match parser.read_blob(offset,len) {
-              Ok(b) => b,
-              Err(e) => {
-                println!["offset={} len={} e={}", offset, len, e];
-                panic!["failed {}", e];
-              },
-            };
-            //let blob = parser.read_blob(offset,len).unwrap();
+            let blob = parser.read_blob(offset,len).unwrap();
             let items = blob.decode_primitive().unwrap().decode();
             for item in items {
               match item {
@@ -282,5 +277,95 @@ impl Ingest {
 
     self.db.lock().await.sync().await.unwrap();
     self.progress.write().await.end("ingest");
+  }
+}
+
+#[derive(Debug,Clone)]
+pub struct Cache {
+  scan_table: ScanTable,
+  node_cache: Arc<Mutex<LruCache<i64,element::Node>>>,
+  way_cache: Arc<Mutex<LruCache<i64,element::Way>>>,
+  relation_cache: Arc<Mutex<LruCache<i64,element::Relation>>>,
+}
+
+impl Cache {
+  pub fn new(scan_table: ScanTable) -> Self {
+    Self {
+      scan_table,
+      node_cache: Arc::new(Mutex::new(LruCache::new(10_000_000))),
+      way_cache: Arc::new(Mutex::new(LruCache::new(1_000_000))),
+      relation_cache: Arc::new(Mutex::new(LruCache::new(1_000))),
+    }
+  }
+  pub async fn get_items<F: std::io::Read+std::io::Seek>(
+    &self, parser: &mut Parser<F>, offset: u64, len: usize
+  ) -> Result<Vec<element::Element>,Error> {
+    let blob = parser.read_blob(offset,len)?;
+    let items = blob.decode_primitive()?.decode();
+    let mut ncache = self.node_cache.lock().await;
+    let mut wcache = self.way_cache.lock().await;
+    let mut rcache = self.relation_cache.lock().await;
+    for item in items.iter() {
+      match item {
+        element::Element::Node(node) => {
+          ncache.put(node.id, node.clone());
+        },
+        element::Element::Way(way) => {
+          wcache.put(way.id, way.clone());
+        },
+        element::Element::Relation(relation) => {
+          rcache.put(relation.id, relation.clone());
+        },
+      }
+    }
+    Ok(items)
+  }
+  pub async fn get_node<F: std::io::Read+std::io::Seek>(
+    &self, parser: &mut Parser<F>, id: i64
+  ) -> Result<Option<element::Node>,Error> {
+    for (offset,len) in self.scan_table.get_node_blob_offsets_for_id(id) {
+      let items = self.get_items(parser, offset, len).await?;
+      for item in items {
+        match item {
+          element::Element::Node(node) => {
+            if node.id == id { return Ok(Some(node)) }
+          },
+          _ => { break }
+        }
+      }
+    }
+    Ok(None)
+  }
+  pub async fn get_way<F: std::io::Read+std::io::Seek>(
+    &self, parser: &mut Parser<F>, id: i64
+  ) -> Result<Option<element::Way>,Error> {
+    for (offset,len) in self.scan_table.get_way_blob_offsets_for_id(id) {
+      let items = self.get_items(parser, offset, len).await?;
+      for item in items {
+        match item {
+          element::Element::Way(way) => {
+            if way.id == id { return Ok(Some(way)) }
+          },
+          _ => { break }
+        }
+      }
+    }
+    Ok(None)
+  }
+  pub async fn get_relation<F: std::io::Read+std::io::Seek>(
+    &self, parser: &mut Parser<F>, id: i64
+  ) -> Result<Option<element::Relation>,Error> {
+    for (offset,len) in self.scan_table.get_relation_blob_offsets_for_id(id) {
+      let items = self.get_items(parser, offset, len).await?;
+      for item in items {
+        match item {
+          element::Element::Relation(relation) => {
+            if relation.id == id { return Ok(Some(relation)) }
+          },
+          _ => { break }
+        }
+      }
+    }
+    Ok(None)
   }
 }
