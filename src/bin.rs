@@ -36,10 +36,14 @@ async fn run() -> Result<(),Error> {
     Some("help") => print!["{}", usage(&args)],
     Some("version") => print!["{}", get_version()],
     Some("ingest") => {
-      let stdin_file = "-".to_string();
-      let pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
-        .and_then(|x| x.first())
-        .unwrap_or(&stdin_file);
+      let o_pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
+        .and_then(|x| x.first());
+      if o_pbf_file.is_none() {
+        println!["--pbf or -f option required\n"];
+        print!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let pbf_file = o_pbf_file.unwrap();
       let edb_dir = get_dirs(&argv);
       if edb_dir.is_none() {
         print!["{}", usage(&args)];
@@ -47,41 +51,18 @@ async fn run() -> Result<(),Error> {
       }
       let mut ingest = Ingest::new(
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-        std::fs::File::open(pbf_file)?,
-        &["pbf","process"]
+        &["ingest"]
       );
       if argv.contains_key("no-monitor") {
-        ingest.process().await;
+        ingest.ingest(&pbf_file).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
-        ingest.process().await;
+        ingest.ingest(&pbf_file).await;
         p.end().await;
       }
     },
     Some("changeset") => {
       unimplemented![]
-      /*
-      let o5c_file = argv.get("o5c").or_else(|| argv.get("f"))
-        .and_then(|x| x.first());
-      let (xq_dir, edb_dir) = get_dirs(&argv);
-      if o5c_file.is_none() || xq_dir.is_none() || edb_dir.is_none() {
-        eprint!["{}",usage(&args)];
-        std::process::exit(1);
-      }
-      let mut ingest = Ingest::new(
-        XQ::from_fields(
-          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
-          get_fields(&argv)
-        ).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
-      );
-      let o5c_stream: Box<dyn io::Read+Send+Unpin> = match o5c_file.unwrap().as_str() {
-        "-" => Box::new(io::stdin()),
-        x => Box::new(File::open(x).await?),
-      };
-      ingest.changeset(o5c_stream).await?;
-      eprintln![""];
-      */
     },
     Some(cmd) => {
       eprintln!["unrecognized command {}", cmd];
@@ -101,36 +82,11 @@ fn usage(args: &[String]) -> String {
 
     ingest - runs pbf and process phases
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
-      -x, --xq      osmxq dir to write normalized quad data
-      -e, --edb     eyros db dir to write spatial data
-      -o, --outdir  write level and eyros db in this dir in xq/ and edb/
-
-      Consult --defaults for additional arguments.
-
-    pbf - parse pbf and write normalized data to level db
-      -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
-      -x, --xq      osmxq dir to write normalized quad data
-      -e, --edb     eyros db dir to write spatial data
-      -o, --outdir  write level and eyros db in this dir in xq/ and edb/
-
-      Consult --defaults for additional arguments.
-
-    process - write georender-pack data to eyros db from populated level db
-      -x, --xq      osmxq dir to write normalized quad data
-      -e, --edb     eyros db dir to write spatial data
-      -o, --outdir  write level and eyros db in this dir in xq/ and edb/
-
-      Consult --defaults for additional arguments.
-
-    changeset - ingest data from an o5c changeset
-      -f, --o5c     o5c changeset file or "-" for stdin (default)
-      -x, --xq      osmxq dir to write normalized quad data
       -e, --edb     eyros db dir to write spatial data
       -o, --outdir  write level and eyros db in this dir in xq/ and edb/
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
-    -d, --defaults Print default osmxq field values.
 
   "#], args.get(0).unwrap_or(&"???".to_string()), get_version()]
 }

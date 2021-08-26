@@ -27,25 +27,23 @@ pub type EDB = eyros::DB<random_access_disk::RandomAccessDisk,T,P,V>;
 
 pub struct Ingest {
   db: Arc<Mutex<EDB>>,
-  pbf_file: std::fs::File,
   place_other: u64,
   pub progress: Arc<RwLock<Progress>>,
 }
 
 impl Ingest {
-  pub fn new(db: EDB, pbf_file: std::fs::File, stages: &[&str]) -> Self {
+  pub fn new(db: EDB, stages: &[&str]) -> Self {
     Self {
       db: Arc::new(Mutex::new(db)),
-      pbf_file,
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
       progress: Arc::new(RwLock::new(Progress::new(stages))),
     }
   }
 
   // loop over the pbf, denormalize the records, georender-pack the data into eyros
-  pub async fn process(&mut self) -> () {
+  pub async fn ingest(&mut self, pbf_file: &str) -> () {
     const BATCH_SIZE: usize = 100_000;
-    self.progress.write().await.start("process");
+    self.progress.write().await.start("ingest");
     let mut work = vec![];
     let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
     let (node_sender,node_receiver) = channel::unbounded();
@@ -53,9 +51,9 @@ impl Ingest {
     let (relation_sender,relation_receiver) = channel::unbounded();
     let (batch_sender,batch_receiver) = channel::bounded(100);
     let scan_table = {
-      let h = self.pbf_file.try_clone().unwrap();
+      let h = std::fs::File::open(pbf_file).unwrap();
+      let pbf_len = h.metadata().unwrap().len();
       let mut scan = Scan::new(Parser::new(Box::new(h)));
-      let pbf_len = self.pbf_file.metadata().unwrap().len();
       scan.scan(0, pbf_len).unwrap();
       let scan_table = scan.table.clone();
       work.push(task::spawn(async move {
@@ -76,7 +74,7 @@ impl Ingest {
     // todo: cache (offset,len) => items
     for receiver in &[node_receiver,way_receiver,relation_receiver] {
       for _ in 0..nproc {
-        let h = self.pbf_file.try_clone().unwrap();
+        let h = std::fs::File::open(pbf_file).unwrap();
         let mut parser = Parser::new(Box::new(h));
         let place_other = self.place_other.clone();
         let bs = batch_sender.clone();
@@ -85,7 +83,14 @@ impl Ingest {
         work.push(task::spawn(async move {
           let mut batch = vec![];
           for (offset,len) in recv.recv().await {
-            let blob = parser.read_blob(offset,len).unwrap();
+            let blob = match parser.read_blob(offset,len) {
+              Ok(b) => b,
+              Err(e) => {
+                println!["offset={} len={} e={}", offset, len, e];
+                panic!["failed {}", e];
+              },
+            };
+            //let blob = parser.read_blob(offset,len).unwrap();
             let items = blob.decode_primitive().unwrap().decode();
             for item in items {
               match item {
@@ -264,7 +269,7 @@ impl Ingest {
         let mut sync_count = 0;
         while let Ok(batch) = batch_receiver.recv().await {
           db.batch(&batch).await.unwrap();
-          progress.write().await.add("process", batch.len());
+          progress.write().await.add("ingest", batch.len());
           sync_count += batch.len();
           if sync_count > 5_000_000 {
             db.sync().await.unwrap();
@@ -276,6 +281,6 @@ impl Ingest {
     join_all(work).await;
 
     self.db.lock().await.sync().await.unwrap();
-    self.progress.write().await.end("process");
+    self.progress.write().await.end("ingest");
   }
 }
