@@ -29,7 +29,7 @@ async-recursion = "0.3.2"
 argmap = "1.1.0"
 indoc = "1.0.3"
 futures = "0.3.13"
-osmxq = "4.0.0"
+osmpbf-parser = { path = "../osmpbf-parser" }
 
 [[bench]]
 name = "large_area"

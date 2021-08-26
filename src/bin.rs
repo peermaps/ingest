@@ -1,7 +1,6 @@
 #![feature(backtrace)]
 use peermaps_ingest::{Ingest,EDB,Progress};
 use async_std::{prelude::*,sync::{Arc,RwLock},task,stream};
-use osmxq::XQ;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
@@ -31,10 +30,6 @@ async fn run() -> Result<(),Error> {
     println!["{}", get_version()];
     return Ok(());
   }
-  if argv.contains_key("defaults") || argv.contains_key("d") {
-    show_defaults();
-    return Ok(());
-  }
 
   match args.get(1).map(|x| x.as_str()) {
     None => print!["{}", usage(&args)],
@@ -45,76 +40,15 @@ async fn run() -> Result<(),Error> {
       let pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
         .and_then(|x| x.first())
         .unwrap_or(&stdin_file);
-      let (xq_dir, edb_dir) = get_dirs(&argv);
-      if xq_dir.is_none() || edb_dir.is_none() {
+      let edb_dir = get_dirs(&argv);
+      if edb_dir.is_none() {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::from_fields(
-          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
-          get_fields(&argv)
-        ).await?,
         open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        std::fs::File::open(pbf_file)?,
         &["pbf","process"]
-      );
-      let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
-        "-" => Box::new(std::io::stdin()),
-        x => Box::new(std::fs::File::open(x)?),
-      };
-      if argv.contains_key("no-monitor") {
-        ingest.load_pbf(pbf_stream).await?;
-        ingest.process().await;
-      } else {
-        let mut p = Monitor::open(ingest.progress.clone());
-        ingest.load_pbf(pbf_stream).await?;
-        ingest.process().await;
-        p.end().await;
-      }
-    },
-    Some("pbf") => {
-      let stdin_file = "-".to_string();
-      let pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
-        .and_then(|x| x.first())
-        .unwrap_or(&stdin_file);
-      let (xq_dir, edb_dir) = get_dirs(&argv);
-      if xq_dir.is_none() || edb_dir.is_none() {
-        eprint!["{}", usage(&args)];
-        std::process::exit(1);
-      }
-      let mut ingest = Ingest::new(
-        XQ::from_fields(
-          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
-          get_fields(&argv)
-        ).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-        &["pbf"]
-      );
-      let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
-        "-" => Box::new(std::io::stdin()),
-        x => Box::new(std::fs::File::open(x)?),
-      };
-      if argv.contains_key("no-monitor") {
-        ingest.load_pbf(pbf_stream).await?;
-      } else {
-        let mut p = Monitor::open(ingest.progress.clone());
-        ingest.load_pbf(pbf_stream).await?;
-        p.end().await;
-      }
-    },
-    Some("process") => {
-      let (xq_dir, edb_dir) = get_dirs(&argv);
-      if xq_dir.is_none() || edb_dir.is_none() {
-        eprint!["{}", usage(&args)];
-        std::process::exit(1);
-      }
-      let mut ingest = Ingest::new(
-        XQ::from_fields(
-          Box::new(osmxq::FileStorage::open_from_path(&xq_dir.unwrap()).await?),
-          get_fields(&argv)
-        ).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-        &["process"]
       );
       if argv.contains_key("no-monitor") {
         ingest.process().await;
@@ -206,16 +140,9 @@ fn get_version() -> &'static str {
   VERSION.unwrap_or("unknown")
 }
 
-fn get_dirs(argv: &argmap::Map) -> (Option<String>,Option<String>) {
+fn get_dirs(argv: &argmap::Map) -> Option<String> {
   let outdir = argv.get("outdir").or_else(|| argv.get("o"))
     .and_then(|x| x.first());
-  let xq_dir = argv.get("xq").or_else(|| argv.get("x"))
-    .and_then(|x| x.first().map(|s| s.clone()))
-    .or_else(|| outdir.and_then(|d: &String| {
-      let mut p = std::path::PathBuf::from(d);
-      p.push("xq");
-      p.to_str().map(|s| s.to_string())
-    }));
   let edb_dir = argv.get("edb").or_else(|| argv.get("e"))
     .and_then(|x| x.first().map(|s| s.clone()))
     .or_else(|| outdir.and_then(|d: &String| {
@@ -223,7 +150,7 @@ fn get_dirs(argv: &argmap::Map) -> (Option<String>,Option<String>) {
       p.push("edb");
       p.to_str().map(|s| s.to_string())
     }));
-  (xq_dir,edb_dir)
+  edb_dir
 }
 
 pub struct Monitor {
@@ -269,65 +196,4 @@ impl Monitor {
   pub async fn end(&mut self) {
     *self.stop.write().await = true;
   }
-}
-
-fn get_fields(argv: &argmap::Map) -> osmxq::Fields {
-  fn parse<T: std::str::FromStr>(x: &str) -> T where <T as std::str::FromStr>::Err: std::fmt::Debug {
-    x.replace("_","").parse().unwrap()
-  }
-  fn get<'a>(argv: &'a argmap::Map, x: &str) -> Option<&'a String> {
-    argv.get(x)
-      .or_else(|| argv.get(&x.replace("-","_")))
-      .and_then(|xs| xs.first())
-  }
-  let mut fields = osmxq::Fields::default();
-  if let Some(x) = get(argv, "id_block_size") {
-    fields.id_block_size = parse(x);
-  }
-  if let Some(x) = get(argv, "id_cache_size") {
-    fields.id_cache_size = parse(x);
-  }
-  if let Some(x) = get(argv, "id_flush_size") {
-    fields.id_flush_size = parse(x);
-  }
-  if let Some(x) = get(argv, "id_flush_top") {
-    fields.id_flush_top = parse(x);
-  }
-  if let Some(x) = get(argv, "id_flush_max_age") {
-    fields.id_flush_max_age = parse(x);
-  }
-  if let Some(x) = get(argv, "record_cache_size") {
-    fields.record_cache_size = parse(x);
-  }
-  if let Some(x) = get(argv, "quad_block_size") {
-    fields.quad_block_size = parse(x);
-  }
-  if let Some(x) = get(argv, "quad_flush_size") {
-    fields.quad_flush_size = parse(x);
-  }
-  if let Some(x) = get(argv, "quad_flush_top") {
-    fields.quad_flush_top = parse(x);
-  }
-  if let Some(x) = get(argv, "quad_flush_max_age") {
-    fields.quad_flush_max_age = parse(x);
-  }
-  if let Some(x) = get(argv, "missing_flush_size") {
-    fields.missing_flush_size = parse(x);
-  }
-  fields
-}
-
-fn show_defaults() {
-  let fields = osmxq::Fields::default();
-  println!["--id_block_size={}", fields.id_block_size];
-  println!["--id_cache_size={}", fields.id_cache_size];
-  println!["--id_flush_size={}", fields.id_flush_size];
-  println!["--id_flush_top={}", fields.id_flush_top];
-  println!["--id_flush_max_age={}", fields.id_flush_max_age];
-  println!["--record_cache_size={}", fields.record_cache_size];
-  println!["--quad_block_size={}", fields.quad_block_size];
-  println!["--quad_flush_size={}", fields.quad_flush_size];
-  println!["--quad_flush_top={}", fields.quad_flush_top];
-  println!["--quad_flush_max_age={}", fields.quad_flush_max_age];
-  println!["--missing_flush_size={}", fields.missing_flush_size];
 }
