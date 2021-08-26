@@ -81,12 +81,10 @@ impl Ingest {
         let place_other = self.place_other.clone();
         let bs = batch_sender.clone();
         let recv = receiver.clone();
-        let table = scan_table.clone();
         work.push(task::spawn(async move {
           let mut batch = vec![];
           for (offset,len) in recv.recv().await {
-            let blob = parser.read_blob(offset,len).unwrap();
-            let items = blob.decode_primitive().unwrap().decode();
+            let items = cache.get_items(&mut parser, offset, len).await.unwrap();
             for item in items {
               match item {
                 element::Element::Node(node) => {
@@ -121,19 +119,9 @@ impl Ingest {
                   if ft == place_other { continue }
                   let mut pdeps = HashMap::new();
                   for r in way.refs.iter() {
-                    for (node_offset,node_len) in table.get_node_blob_offsets_for_id(*r) {
-                      let blob = parser.read_blob(node_offset,node_len).unwrap();
-                      let items = blob.decode_primitive().unwrap().decode();
-                      for item in items {
-                        match item {
-                          element::Element::Node(node) => {
-                            if node.id != *r { continue }
-                            pdeps.insert(node.id as u64, (node.lon as f32, node.lat as f32));
-                            break;
-                          },
-                          _ => {},
-                        }
-                      }
+                    if let Some(node) = cache.get_node(&mut parser, *r).await.unwrap() {
+                      if node.id != *r { continue }
+                      pdeps.insert(node.id as u64, (node.lon as f32, node.lat as f32));
                     }
                   }
                   let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
@@ -188,41 +176,18 @@ impl Ingest {
                   let mut way_deps: WayDeps = HashMap::new();
 
                   for m in relation.members.iter() {
-                    match m.member_type {
-                      element::MemberType::Way => {
-                        for (way_offset,way_len) in table.get_way_blob_offsets_for_id(m.id) {
-                          let blob = parser.read_blob(way_offset,way_len).unwrap();
-                          let items = blob.decode_primitive().unwrap().decode();
-                          for item in items {
-                            match item {
-                              element::Element::Way(way) => {
-                                if way.id != m.id { continue }
-                                let refs = way.refs.iter().map(|r| *r as u64).collect::<Vec<u64>>();
-                                way_deps.insert(way.id as u64, refs);
-                                for r in way.refs.iter() {
-                                  for (node_offset,node_len) in table.get_node_blob_offsets_for_id(*r) {
-                                    let blob = parser.read_blob(node_offset,node_len).unwrap();
-                                    let items = blob.decode_primitive().unwrap().decode();
-                                    for item in items {
-                                      match item {
-                                        element::Element::Node(node) => {
-                                          if node.id != *r { continue }
-                                          node_deps.insert(node.id as u64, (node.lon as f32, node.lat as f32));
-                                          break;
-                                        },
-                                        _ => {},
-                                      }
-                                    }
-                                  }
-                                }
-                                break;
-                              },
-                              _ => {},
-                            }
+                    if m.member_type == element::MemberType::Way {
+                      if let Some(way) = cache.get_way(&mut parser, m.id).await.unwrap() {
+                        if way.id != m.id { continue }
+                        let refs = way.refs.iter().map(|r| *r as u64).collect::<Vec<u64>>();
+                        way_deps.insert(way.id as u64, refs);
+                        for r in way.refs.iter() {
+                          if let Some(node) = cache.get_node(&mut parser, *r).await.unwrap() {
+                            if node.id != *r { continue }
+                            node_deps.insert(node.id as u64, (node.lon as f32, node.lat as f32));
                           }
                         }
-                      },
-                      _ => {},
+                      }
                     }
                   }
                   if node_deps.len() <= 1 { continue }
@@ -323,6 +288,9 @@ impl Cache {
   pub async fn get_node<F: std::io::Read+std::io::Seek>(
     &self, parser: &mut Parser<F>, id: i64
   ) -> Result<Option<element::Node>,Error> {
+    if let Some(node) = self.node_cache.lock().await.get(&id) {
+      return Ok(Some(node.clone()));
+    }
     for (offset,len) in self.scan_table.get_node_blob_offsets_for_id(id) {
       let items = self.get_items(parser, offset, len).await?;
       for item in items {
@@ -339,6 +307,9 @@ impl Cache {
   pub async fn get_way<F: std::io::Read+std::io::Seek>(
     &self, parser: &mut Parser<F>, id: i64
   ) -> Result<Option<element::Way>,Error> {
+    if let Some(way) = self.way_cache.lock().await.get(&id) {
+      return Ok(Some(way.clone()));
+    }
     for (offset,len) in self.scan_table.get_way_blob_offsets_for_id(id) {
       let items = self.get_items(parser, offset, len).await?;
       for item in items {
@@ -355,6 +326,9 @@ impl Cache {
   pub async fn get_relation<F: std::io::Read+std::io::Seek>(
     &self, parser: &mut Parser<F>, id: i64
   ) -> Result<Option<element::Relation>,Error> {
+    if let Some(relation) = self.relation_cache.lock().await.get(&id) {
+      return Ok(Some(relation.clone()));
+    }
     for (offset,len) in self.scan_table.get_relation_blob_offsets_for_id(id) {
       let items = self.get_items(parser, offset, len).await?;
       for item in items {
