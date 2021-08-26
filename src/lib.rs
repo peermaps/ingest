@@ -59,9 +59,7 @@ impl Ingest {
       let scan_table = scan.table.clone();
       work.push(task::spawn(async move {
         for (offset,len) in scan.get_node_blob_offsets() {
-          if offset > 0 { // skip blob_header
-            node_sender.send((offset,len)).await.unwrap();
-          }
+          node_sender.send((offset,len)).await.unwrap();
         }
         node_sender.close();
         for (offset,len) in scan.get_way_blob_offsets() {
@@ -76,7 +74,7 @@ impl Ingest {
       scan_table
     };
 
-    let mnactive = Arc::new(Mutex::new(0));
+    let mnactive = Arc::new(Mutex::new(1));
     for receiver in &[node_receiver,way_receiver,relation_receiver] {
       for _ in 0..nproc {
         let nactive = mnactive.clone();
@@ -89,9 +87,11 @@ impl Ingest {
         let recv = receiver.clone();
         work.push(task::spawn(async move {
           let mut batch = vec![];
-          for (offset,len) in recv.recv().await {
+          let mut element_counter = 0;
+          while let Ok((offset,len)) = recv.recv().await {
             let items = cache.get_items(&mut parser, offset, len).await.unwrap();
             for item in items {
+              element_counter += 1;
               match item {
                 element::Element::Node(node) => {
                   let tags = node.tags.iter()
@@ -111,10 +111,6 @@ impl Ingest {
                       ),
                       encoded.into()
                     ));
-                    if batch.len() >= BATCH_SIZE {
-                      bs.send(batch.clone()).await.unwrap();
-                      batch.clear();
-                    }
                   }
                 },
                 element::Element::Way(way) => {
@@ -150,10 +146,6 @@ impl Ingest {
                       eyros::Coord::Interval(bbox.1,bbox.3),
                     );
                     batch.push(eyros::Row::Insert(point, encoded.into()));
-                    if batch.len() >= BATCH_SIZE {
-                      bs.send(batch.clone()).await.unwrap();
-                      batch.clear();
-                    }
                   }
                 },
                 element::Element::Relation(relation) => {
@@ -214,16 +206,17 @@ impl Ingest {
                       eyros::Coord::Interval(bbox.1,bbox.3),
                     );
                     batch.push(eyros::Row::Insert(point, encoded.into()));
-                    if batch.len() >= BATCH_SIZE {
-                      bs.send(batch.clone()).await.unwrap();
-                      batch.clear();
-                    }
                   }
                 },
               }
+              if batch.len() >= BATCH_SIZE {
+                bs.send((element_counter,batch.clone())).await.unwrap();
+                batch.clear();
+                element_counter = 0;
+              }
             }
           }
-          bs.send(batch.clone()).await.unwrap();
+          bs.send((element_counter,batch.clone())).await.unwrap();
           batch.clear();
 
           {
@@ -241,9 +234,11 @@ impl Ingest {
       work.push(task::spawn_local(async move {
         let mut db = db_c.lock().await;
         let mut sync_count = 0;
-        while let Ok(batch) = batch_receiver.recv().await {
-          db.batch(&batch).await.unwrap();
-          progress.write().await.add("ingest", batch.len());
+        while let Ok((element_counter,batch)) = batch_receiver.recv().await {
+          if !batch.is_empty() {
+            db.batch(&batch).await.unwrap();
+          }
+          progress.write().await.add("ingest", element_counter);
           sync_count += batch.len();
           if sync_count > 5_000_000 {
             db.sync().await.unwrap();
@@ -252,6 +247,12 @@ impl Ingest {
         }
         db.sync().await.unwrap();
       }));
+    }
+
+    {
+      let mut n = mnactive.lock().await;
+      *n -= 1;
+      if *n == 0 { batch_sender.close(); }
     }
     join_all(work).await;
     self.progress.write().await.end("ingest");
