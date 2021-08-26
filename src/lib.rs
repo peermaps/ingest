@@ -42,10 +42,10 @@ impl Ingest {
 
   // loop over the pbf, denormalize the records, georender-pack the data into eyros
   pub async fn ingest(&mut self, pbf_file: &str) -> () {
+    const BATCH_SEND_SIZE: usize = 1_000;
     const BATCH_SIZE: usize = 100_000;
     self.progress.write().await.start("ingest");
     let mut work = vec![];
-    let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
     let (node_sender,node_receiver) = channel::unbounded();
     let (way_sender,way_receiver) = channel::unbounded();
     let (relation_sender,relation_receiver) = channel::unbounded();
@@ -73,21 +73,24 @@ impl Ingest {
       scan_table
     };
 
+    let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
     let mnactive = Arc::new(Mutex::new(1));
-    for receiver in &[node_receiver,way_receiver,relation_receiver] {
-      for _ in 0..nproc {
-        let nactive = mnactive.clone();
-        *mnactive.lock().await += 1;
-        let mut cache = Cache::new(scan_table.clone());
-        let h = std::fs::File::open(pbf_file).unwrap();
-        let mut parser = Parser::new(Box::new(h));
-        let place_other = self.place_other.clone();
-        let bs = batch_sender.clone();
-        let recv = receiver.clone();
-        work.push(task::spawn(async move {
-          let mut batch = vec![];
-          let mut element_counter = 0;
-          while let Ok((offset,len)) = recv.recv().await {
+    for _ in 0..(nproc-1).max(1) {
+      let nactive = mnactive.clone();
+      *nactive.lock().await += 1;
+      let mut cache = Cache::new(scan_table.clone());
+      let h = std::fs::File::open(pbf_file).unwrap();
+      let mut parser = Parser::new(Box::new(h));
+      let place_other = self.place_other.clone();
+      let bs = batch_sender.clone();
+      let n_receiver = node_receiver.clone();
+      let w_receiver = way_receiver.clone();
+      let r_receiver = relation_receiver.clone();
+      work.push(task::spawn(async move {
+        let mut batch = vec![];
+        let mut element_counter = 0;
+        for receiver in &[n_receiver,w_receiver,r_receiver] {
+          while let Ok((offset,len)) = receiver.recv().await {
             let items = cache.get_items(&mut parser, offset, len).await.unwrap();
             for item in items {
               element_counter += 1;
@@ -208,23 +211,23 @@ impl Ingest {
                   }
                 },
               }
-              if batch.len() >= BATCH_SIZE {
+              if batch.len() >= BATCH_SEND_SIZE {
                 bs.send((element_counter,batch.clone())).await.unwrap();
                 batch.clear();
                 element_counter = 0;
               }
             }
           }
-          bs.send((element_counter,batch.clone())).await.unwrap();
-          batch.clear();
+        }
+        bs.send((element_counter,batch.clone())).await.unwrap();
+        batch.clear();
 
-          {
-            let mut n = nactive.lock().await;
-            *n -= 1;
-            if *n == 0 { bs.close(); }
-          }
-        }));
-      }
+        {
+          let mut n = nactive.lock().await;
+          *n -= 1;
+          if *n == 0 { bs.close(); }
+        }
+      }));
     }
 
     {
@@ -233,17 +236,21 @@ impl Ingest {
       work.push(task::spawn_local(async move {
         let mut db = db_c.lock().await;
         let mut sync_count = 0;
-        while let Ok((element_counter,batch)) = batch_receiver.recv().await {
-          if !batch.is_empty() {
+        let mut batch = vec![];
+        while let Ok((element_counter,rows)) = batch_receiver.recv().await {
+          batch.extend(rows);
+          if batch.len() >= BATCH_SIZE {
             db.batch(&batch).await.unwrap();
+            sync_count += batch.len();
+            batch.clear();
+            if sync_count > 5_000_000 {
+              db.sync().await.unwrap();
+              sync_count = 0;
+            }
           }
           progress.write().await.add("ingest", element_counter);
-          sync_count += batch.len();
-          if sync_count > 5_000_000 {
-            db.sync().await.unwrap();
-            sync_count = 0;
-          }
         }
+        db.batch(&batch).await.unwrap();
         db.sync().await.unwrap();
       }));
     }
