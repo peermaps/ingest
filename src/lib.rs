@@ -4,7 +4,6 @@ pub mod encoder;
 pub use encoder::*;
 pub mod error;
 pub use error::*;
-//mod record;
 mod value;
 mod progress;
 pub use progress::Progress;
@@ -79,7 +78,7 @@ impl Ingest {
       for _ in 0..nproc {
         let nactive = mnactive.clone();
         *mnactive.lock().await += 1;
-        let cache = Cache::new(scan_table.clone());
+        let mut cache = Cache::new(scan_table.clone());
         let h = std::fs::File::open(pbf_file).unwrap();
         let mut parser = Parser::new(Box::new(h));
         let place_other = self.place_other.clone();
@@ -265,20 +264,29 @@ pub struct Cache {
   node_cache: Arc<Mutex<LruCache<i64,element::Node>>>,
   way_cache: Arc<Mutex<LruCache<i64,element::Way>>>,
   relation_cache: Arc<Mutex<LruCache<i64,element::Relation>>>,
+  offset_pending: HashMap<u64,Arc<Mutex<()>>>,
 }
 
 impl Cache {
   pub fn new(scan_table: ScanTable) -> Self {
     Self {
       scan_table,
-      node_cache: Arc::new(Mutex::new(LruCache::new(10_000_000))),
-      way_cache: Arc::new(Mutex::new(LruCache::new(1_000_000))),
+      node_cache: Arc::new(Mutex::new(LruCache::new(1_000_000))),
+      way_cache: Arc::new(Mutex::new(LruCache::new(100_000))),
       relation_cache: Arc::new(Mutex::new(LruCache::new(1_000))),
+      offset_pending: HashMap::new(),
     }
   }
   pub async fn get_items<F: std::io::Read+std::io::Seek>(
-    &self, parser: &mut Parser<F>, offset: u64, len: usize
+    &mut self, parser: &mut Parser<F>, offset: u64, len: usize
   ) -> Result<Vec<element::Element>,Error> {
+    if let Some(p) = self.offset_pending.get(&offset) {
+      p.lock().await;
+    }
+    let offset_m = Arc::new(Mutex::new(()));
+    offset_m.lock().await;
+    self.offset_pending.insert(offset, offset_m.clone());
+
     let blob = parser.read_blob(offset,len)?;
     let items = blob.decode_primitive()?.decode();
     let mut ncache = self.node_cache.lock().await;
@@ -297,15 +305,22 @@ impl Cache {
         },
       }
     }
+    self.offset_pending.remove(&offset);
     Ok(items)
   }
   pub async fn get_node<F: std::io::Read+std::io::Seek>(
-    &self, parser: &mut Parser<F>, id: i64
+    &mut self, parser: &mut Parser<F>, id: i64
   ) -> Result<Option<element::Node>,Error> {
     if let Some(node) = self.node_cache.lock().await.get(&id) {
       return Ok(Some(node.clone()));
     }
     for (offset,len) in self.scan_table.get_node_blob_offsets_for_id(id) {
+      if let Some(p) = self.offset_pending.get(&offset) {
+        p.lock().await;
+      }
+      if let Some(node) = self.node_cache.lock().await.get(&id) {
+        return Ok(Some(node.clone()));
+      }
       let items = self.get_items(parser, offset, len).await?;
       for item in items {
         match item {
@@ -319,12 +334,18 @@ impl Cache {
     Ok(None)
   }
   pub async fn get_way<F: std::io::Read+std::io::Seek>(
-    &self, parser: &mut Parser<F>, id: i64
+    &mut self, parser: &mut Parser<F>, id: i64
   ) -> Result<Option<element::Way>,Error> {
     if let Some(way) = self.way_cache.lock().await.get(&id) {
       return Ok(Some(way.clone()));
     }
     for (offset,len) in self.scan_table.get_way_blob_offsets_for_id(id) {
+      if let Some(p) = self.offset_pending.get(&offset) {
+        p.lock().await;
+      }
+      if let Some(way) = self.way_cache.lock().await.get(&id) {
+        return Ok(Some(way.clone()));
+      }
       let items = self.get_items(parser, offset, len).await?;
       for item in items {
         match item {
@@ -338,12 +359,18 @@ impl Cache {
     Ok(None)
   }
   pub async fn get_relation<F: std::io::Read+std::io::Seek>(
-    &self, parser: &mut Parser<F>, id: i64
+    &mut self, parser: &mut Parser<F>, id: i64
   ) -> Result<Option<element::Relation>,Error> {
     if let Some(relation) = self.relation_cache.lock().await.get(&id) {
       return Ok(Some(relation.clone()));
     }
     for (offset,len) in self.scan_table.get_relation_blob_offsets_for_id(id) {
+      if let Some(p) = self.offset_pending.get(&offset) {
+        p.lock().await;
+      }
+      if let Some(relation) = self.relation_cache.lock().await.get(&id) {
+        return Ok(Some(relation.clone()));
+      }
       let items = self.get_items(parser, offset, len).await?;
       for item in items {
         match item {
