@@ -53,8 +53,7 @@ impl Ingest {
       scan_table
     };
 
-
-    let mnactive = Arc::new(Mutex::new(3));
+    let mnactive = Arc::new(Mutex::new(4));
 
     { // node thread
       let place_other = self.place_other.clone();
@@ -152,8 +151,10 @@ impl Ingest {
               let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
               if ft == place_other { continue }
               let mut pdeps = HashMap::new();
-              for (node_id,(lon,lat)) in all_node_deps.get(&way.id).unwrap_or(&vec![]) {
-                pdeps.insert(*node_id as u64, (*lon as f32, *lat as f32));
+              for r in way.refs.iter() {
+                if let Some((lon,lat)) = all_node_deps.get(r) {
+                  pdeps.insert(*r as u64, (*lon as f32, *lat as f32));
+                }
               }
               let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
               if pdeps.len() <= 1 { continue }
@@ -200,93 +201,120 @@ impl Ingest {
       }));
     }
 
-    /*
+    { // relation thread
+      let place_other = self.place_other.clone();
+      let file = pbf_file.to_string();
+      let bs = batch_sender.clone();
+      let table = scan_table.clone();
+      let nactive = mnactive.clone();
       work.push(task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
-        //for receiver in &[n_receiver,w_receiver,r_receiver] {
-        for receiver in &[w_receiver] {
-          while let Ok((offset,len)) = receiver.recv().await {
-            let items = cache.get_items(&mut parser, offset, len).await.unwrap();
-            for item in items {
+        let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+        {
+          let mut offset = 0;
+          loop {
+            let (o_next_offset,relations) = {
+              let scans = (0..nproc).map(|_| {
+                let h = std::fs::File::open(&file).unwrap();
+                let parser = Parser::new(Box::new(h));
+                Scan::from_table(parser, table.clone())
+              }).collect::<Vec<_>>();
+              denorm::get_relations(scans, 10_000, offset, 100_000).await
+            };
+            let relation_ref_table = denorm::relation_ref_table(&relations);
+            let node_receiver = {
+              let scans = (0..nproc).map(|_| {
+                let h = std::fs::File::open(&file).unwrap();
+                let parser = Parser::new(Box::new(h));
+                Scan::from_table(parser, table.clone())
+              }).collect::<Vec<_>>();
+              denorm::get_nodes_bare_ch(scans, 10_000).await
+            };
+            let way_receiver = {
+              let scans = (0..nproc).map(|_| {
+                let h = std::fs::File::open(&file).unwrap();
+                let parser = Parser::new(Box::new(h));
+                Scan::from_table(parser, table.clone())
+              }).collect::<Vec<_>>();
+              denorm::get_ways_bare_ch(scans, 10_000).await
+            };
+            let (all_node_deps,all_way_deps) = denorm::denormalize_relations(
+              &relation_ref_table, node_receiver, way_receiver
+            ).await.unwrap();
+
+            for relation in relations {
               element_counter += 1;
-              match item {
-                element::Element::Node(node) => {
-                },
-                element::Element::Way(way) => {
-                },
-                element::Element::Relation(relation) => {
-                  let tags = relation.tags.iter()
-                    .map(|(k,v)| (k.as_str(),v.as_str()))
-                    .collect::<Vec<(&str,&str)>>();
-                  let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
-                  if ft == place_other { continue }
-                  let is_area = osm_is_area::relation(&tags, &vec![1]);
-                  if !is_area { continue }
-                  let members = relation.members.iter()
-                    .filter(|m| &m.role == "inner" || &m.role == "outer")
-                    .map(|m| georender_pack::Member::new(
-                      m.id as u64,
-                      match m.role.as_str() {
-                        "outer" => georender_pack::MemberRole::Outer(),
-                        "inner" => georender_pack::MemberRole::Inner(),
-                        _ => panic!["unexpected role should have been filtered out"],
-                      },
-                      georender_pack::MemberType::Way()
-                    ))
-                    .collect::<Vec<_>>();
-                  if members.is_empty() { continue }
+              let tags = relation.tags.iter()
+                .map(|(k,v)| (k.as_str(),v.as_str()))
+                .collect::<Vec<(&str,&str)>>();
+              let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
+              if ft == place_other { continue }
+              let is_area = osm_is_area::relation(&tags, &vec![1]);
+              if !is_area { continue }
+              let members = relation.members.iter()
+                .filter(|m| &m.role == "inner" || &m.role == "outer")
+                .map(|m| georender_pack::Member::new(
+                  m.id as u64,
+                  match m.role.as_str() {
+                    "outer" => georender_pack::MemberRole::Outer(),
+                    "inner" => georender_pack::MemberRole::Inner(),
+                    _ => panic!["unexpected role should have been filtered out"],
+                  },
+                  georender_pack::MemberType::Way()
+                ))
+                .collect::<Vec<_>>();
+              if members.is_empty() { continue }
 
-                  let mut node_deps: NodeDeps = HashMap::new();
-                  let mut way_deps: WayDeps = HashMap::new();
-
-                  for m in relation.members.iter() {
-                    if m.member_type == element::MemberType::Way {
-                      if let Some(way) = cache.get_way(&mut parser, m.id).await.unwrap() {
-                        if way.id != m.id { continue }
-                        let refs = way.refs.iter().map(|r| *r as u64).collect::<Vec<u64>>();
-                        way_deps.insert(way.id as u64, refs);
-                        for r in way.refs.iter() {
-                          if let Some(node) = cache.get_node(&mut parser, *r).await.unwrap() {
-                            if node.id != *r { continue }
-                            node_deps.insert(node.id as u64, (node.lon as f32, node.lat as f32));
-                          }
-                        }
-                      }
+              let mut node_deps = HashMap::new();
+              let mut way_deps = HashMap::new();
+              for m in members.iter() {
+                if let Some(refs) = all_way_deps.get(&(m.id as i64)) {
+                  way_deps.insert(m.id as u64, refs.iter()
+                    .map(|r| *r as u64).collect::<Vec<u64>>());
+                  for r in refs.iter() {
+                    if let Some((lon,lat)) = all_node_deps.get(r) {
+                      node_deps.insert(*r as u64, (*lon as f32, *lat as f32));
                     }
                   }
-                  if node_deps.len() <= 1 { continue }
-                  let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-                  for p in node_deps.values() {
-                    bbox.0 = bbox.0.min(p.0);
-                    bbox.1 = bbox.1.min(p.1);
-                    bbox.2 = bbox.2.max(p.0);
-                    bbox.3 = bbox.3.max(p.1);
-                  }
-                  let r_encoded = georender_pack::encode::relation_from_parsed(
-                    (relation.id as u64)*3+2, ft, is_area,
-                    &labels, &members, &node_deps, &way_deps
-                  );
-                  if let Ok(encoded) = r_encoded {
-                    let point = (
-                      eyros::Coord::Interval(bbox.0,bbox.2),
-                      eyros::Coord::Interval(bbox.1,bbox.3),
-                    );
-                    batch.push(eyros::Row::Insert(point, encoded.into()));
-                  }
-                },
+                }
               }
-              if batch.len() >= BATCH_SEND_SIZE {
-                bs.send((element_counter,batch.clone())).await.unwrap();
-                batch.clear();
-                element_counter = 0;
+
+              if node_deps.len() <= 1 { continue }
+              let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
+              for p in node_deps.values() {
+                bbox.0 = bbox.0.min(p.0);
+                bbox.1 = bbox.1.min(p.1);
+                bbox.2 = bbox.2.max(p.0);
+                bbox.3 = bbox.3.max(p.1);
               }
+              let r_encoded = georender_pack::encode::relation_from_parsed(
+                (relation.id as u64)*3+2, ft, is_area,
+                &labels, &members, &node_deps, &way_deps
+              );
+              if let Ok(encoded) = r_encoded {
+                let point = (
+                  eyros::Coord::Interval(bbox.0,bbox.2),
+                  eyros::Coord::Interval(bbox.1,bbox.3),
+                );
+                batch.push(eyros::Row::Insert(point, encoded.into()));
+                if batch.len() >= BATCH_SEND_SIZE {
+                  bs.send((element_counter,batch.clone())).await.unwrap();
+                  batch.clear();
+                  element_counter = 0;
+                }
+              }
+            }
+            if let Some(next_offset) = o_next_offset {
+              offset = next_offset;
+            } else {
+              break;
             }
           }
         }
-        bs.send((element_counter,batch.clone())).await.unwrap();
-        batch.clear();
-
+        if !batch.is_empty() {
+          bs.send((element_counter,batch)).await.unwrap();
+        }
         {
           let mut n = nactive.lock().await;
           *n -= 1;
@@ -294,7 +322,6 @@ impl Ingest {
         }
       }));
     }
-    */
 
     {
       let progress = self.progress.clone();
