@@ -6,9 +6,9 @@ pub mod error;
 pub use error::*;
 mod value;
 mod progress;
+pub mod denorm;
 pub use progress::Progress;
-use osmpbf_parser::{Parser,Scan,ScanTable,element};
-use lru::LruCache;
+use osmpbf_parser::{Parser,Scan};
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
@@ -16,9 +16,6 @@ pub const REF_PREFIX: u8 = 2;
 use std::collections::HashMap;
 use async_std::{sync::{Arc,Mutex,RwLock},task,channel};
 use futures::future::join_all;
-
-type NodeDeps = HashMap<u64,(f32,f32)>;
-type WayDeps = HashMap<u64,Vec<u64>>;
 
 type T = eyros::Tree2<f32,f32,V>;
 type P = (eyros::Coord<f32>,eyros::Coord<f32>);
@@ -42,13 +39,10 @@ impl Ingest {
 
   // loop over the pbf, denormalize the records, georender-pack the data into eyros
   pub async fn ingest(&mut self, pbf_file: &str) -> () {
-    const BATCH_SEND_SIZE: usize = 1_000;
+    const BATCH_SEND_SIZE: usize = 10_000;
     const BATCH_SIZE: usize = 100_000;
     self.progress.write().await.start("ingest");
     let mut work = vec![];
-    let (node_sender,node_receiver) = channel::unbounded();
-    let (way_sender,way_receiver) = channel::unbounded();
-    let (relation_sender,relation_receiver) = channel::unbounded();
     let (batch_sender,batch_receiver) = channel::bounded(100);
     let scan_table = {
       let h = std::fs::File::open(pbf_file).unwrap();
@@ -56,40 +50,105 @@ impl Ingest {
       let mut scan = Scan::new(Parser::new(Box::new(h)));
       scan.scan(0, pbf_len).unwrap();
       let scan_table = scan.table.clone();
-      work.push(task::spawn(async move {
-        for (offset,len) in scan.get_node_blob_offsets() {
-          node_sender.send((offset,len)).await.unwrap();
-        }
-        node_sender.close();
-        for (offset,len) in scan.get_way_blob_offsets() {
-          way_sender.send((offset,len)).await.unwrap();
-        }
-        way_sender.close();
-        for (offset,len) in scan.get_relation_blob_offsets() {
-          relation_sender.send((offset,len)).await.unwrap();
-        }
-        relation_sender.close();
-      }));
       scan_table
     };
 
-    let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
-    let mnactive = Arc::new(Mutex::new(1));
-    for _ in 0..(nproc-1).max(1) {
-      let nactive = mnactive.clone();
-      *nactive.lock().await += 1;
-      let mut cache = Cache::new(scan_table.clone());
-      let h = std::fs::File::open(pbf_file).unwrap();
-      let mut parser = Parser::new(Box::new(h));
+
+    let mnactive = Arc::new(Mutex::new(2));
+
+    { // way thread
       let place_other = self.place_other.clone();
+      let file = pbf_file.to_string();
       let bs = batch_sender.clone();
-      let n_receiver = node_receiver.clone();
-      let w_receiver = way_receiver.clone();
-      let r_receiver = relation_receiver.clone();
+      let table = scan_table.clone();
+      let nactive = mnactive.clone();
       work.push(task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
-        for receiver in &[n_receiver,w_receiver,r_receiver] {
+        let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+        {
+          let mut offset = 0;
+          loop {
+            let (o_next_offset,ways) = {
+              let scans = (0..nproc).map(|_| {
+                let h = std::fs::File::open(&file).unwrap();
+                let parser = Parser::new(Box::new(h));
+                Scan::from_table(parser, table.clone())
+              }).collect::<Vec<_>>();
+              denorm::get_ways(scans, 10_000, offset, 10_000_000).await
+            };
+            let way_ref_table = denorm::way_ref_table(&ways);
+            let node_receiver = {
+              let scans = (0..nproc).map(|_| {
+                let h = std::fs::File::open(&file).unwrap();
+                let parser = Parser::new(Box::new(h));
+                Scan::from_table(parser, table.clone())
+              }).collect::<Vec<_>>();
+              denorm::get_nodes_bare_ch(scans, 10_000).await
+            };
+            let all_node_deps = denorm::denormalize_ways(&way_ref_table, node_receiver).await.unwrap();
+            for way in ways {
+              element_counter += 1;
+              let tags = way.tags.iter()
+                .map(|(k,v)| (k.as_str(),v.as_str()))
+                .collect::<Vec<(&str,&str)>>();
+              let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
+              if ft == place_other { continue }
+              let mut pdeps = HashMap::new();
+              for (node_id,(lon,lat)) in all_node_deps.get(&way.id).unwrap_or(&vec![]) {
+                pdeps.insert(*node_id as u64, (*lon as f32, *lat as f32));
+              }
+              let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
+              if pdeps.len() <= 1 { continue }
+              for (lon,lat) in pdeps.values() {
+                bbox.0 = bbox.0.min(*lon);
+                bbox.1 = bbox.1.min(*lat);
+                bbox.2 = bbox.2.max(*lon);
+                bbox.3 = bbox.3.max(*lat);
+              }
+              let refs = way.refs.iter().map(|r| *r as u64).collect::<Vec<u64>>();
+              let is_area = osm_is_area::way(&tags, &refs);
+              let r_encoded = georender_pack::encode::way_from_parsed(
+                (way.id as u64)*3+1, ft, is_area, &labels, &refs, &pdeps
+              );
+              if let Ok(encoded) = r_encoded {
+                if encoded.is_empty() { continue }
+                let point = (
+                  eyros::Coord::Interval(bbox.0,bbox.2),
+                  eyros::Coord::Interval(bbox.1,bbox.3),
+                );
+                batch.push(eyros::Row::Insert(point, encoded.into()));
+                if batch.len() >= BATCH_SEND_SIZE {
+                  bs.send((element_counter,batch.clone())).await.unwrap();
+                  batch.clear();
+                  element_counter = 0;
+                }
+              }
+            }
+            if let Some(next_offset) = o_next_offset {
+              offset = next_offset;
+            } else {
+              break;
+            }
+          }
+        }
+        if !batch.is_empty() {
+          bs.send((element_counter,batch)).await.unwrap();
+        }
+        {
+          let mut n = nactive.lock().await;
+          *n -= 1;
+          if *n == 0 { bs.close(); }
+        }
+      }));
+    }
+
+    /*
+      work.push(task::spawn(async move {
+        let mut batch = vec![];
+        let mut element_counter = 0;
+        //for receiver in &[n_receiver,w_receiver,r_receiver] {
+        for receiver in &[w_receiver] {
           while let Ok((offset,len)) = receiver.recv().await {
             let items = cache.get_items(&mut parser, offset, len).await.unwrap();
             for item in items {
@@ -116,39 +175,6 @@ impl Ingest {
                   }
                 },
                 element::Element::Way(way) => {
-                  let tags = way.tags.iter()
-                    .map(|(k,v)| (k.as_str(),v.as_str()))
-                    .collect::<Vec<(&str,&str)>>();
-                  let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
-                  if ft == place_other { continue }
-                  let mut pdeps = HashMap::new();
-                  for r in way.refs.iter() {
-                    if let Some(node) = cache.get_node(&mut parser, *r).await.unwrap() {
-                      if node.id != *r { continue }
-                      pdeps.insert(node.id as u64, (node.lon as f32, node.lat as f32));
-                    }
-                  }
-                  let mut bbox = (f32::INFINITY,f32::INFINITY,f32::NEG_INFINITY,f32::NEG_INFINITY);
-                  if pdeps.len() <= 1 { continue }
-                  for (lon,lat) in pdeps.values() {
-                    bbox.0 = bbox.0.min(*lon);
-                    bbox.1 = bbox.1.min(*lat);
-                    bbox.2 = bbox.2.max(*lon);
-                    bbox.3 = bbox.3.max(*lat);
-                  }
-                  let refs = way.refs.iter().map(|r| *r as u64).collect::<Vec<u64>>();
-                  let is_area = osm_is_area::way(&tags, &refs);
-                  let r_encoded = georender_pack::encode::way_from_parsed(
-                    (way.id as u64)*3+1, ft, is_area, &labels, &refs, &pdeps
-                  );
-                  if let Ok(encoded) = r_encoded {
-                    if encoded.is_empty() { continue }
-                    let point = (
-                      eyros::Coord::Interval(bbox.0,bbox.2),
-                      eyros::Coord::Interval(bbox.1,bbox.3),
-                    );
-                    batch.push(eyros::Row::Insert(point, encoded.into()));
-                  }
                 },
                 element::Element::Relation(relation) => {
                   let tags = relation.tags.iter()
@@ -229,6 +255,7 @@ impl Ingest {
         }
       }));
     }
+    */
 
     {
       let progress = self.progress.clone();
@@ -262,132 +289,5 @@ impl Ingest {
     }
     join_all(work).await;
     self.progress.write().await.end("ingest");
-  }
-}
-
-#[derive(Debug,Clone)]
-pub struct Cache {
-  scan_table: ScanTable,
-  node_cache: Arc<Mutex<LruCache<i64,element::Node>>>,
-  way_cache: Arc<Mutex<LruCache<i64,element::Way>>>,
-  relation_cache: Arc<Mutex<LruCache<i64,element::Relation>>>,
-  offset_pending: HashMap<u64,Arc<Mutex<()>>>,
-}
-
-impl Cache {
-  pub fn new(scan_table: ScanTable) -> Self {
-    Self {
-      scan_table,
-      node_cache: Arc::new(Mutex::new(LruCache::new(1_000_000))),
-      way_cache: Arc::new(Mutex::new(LruCache::new(100_000))),
-      relation_cache: Arc::new(Mutex::new(LruCache::new(1_000))),
-      offset_pending: HashMap::new(),
-    }
-  }
-  pub async fn get_items<F: std::io::Read+std::io::Seek>(
-    &mut self, parser: &mut Parser<F>, offset: u64, len: usize
-  ) -> Result<Vec<element::Element>,Error> {
-    if let Some(p) = self.offset_pending.get(&offset) {
-      p.lock().await;
-    }
-    let offset_m = Arc::new(Mutex::new(()));
-    offset_m.lock().await;
-    self.offset_pending.insert(offset, offset_m.clone());
-
-    let blob = parser.read_blob(offset,len)?;
-    let items = blob.decode_primitive()?.decode();
-    let mut ncache = self.node_cache.lock().await;
-    let mut wcache = self.way_cache.lock().await;
-    let mut rcache = self.relation_cache.lock().await;
-    for item in items.iter() {
-      match item {
-        element::Element::Node(node) => {
-          ncache.put(node.id, node.clone());
-        },
-        element::Element::Way(way) => {
-          wcache.put(way.id, way.clone());
-        },
-        element::Element::Relation(relation) => {
-          rcache.put(relation.id, relation.clone());
-        },
-      }
-    }
-    self.offset_pending.remove(&offset);
-    Ok(items)
-  }
-  pub async fn get_node<F: std::io::Read+std::io::Seek>(
-    &mut self, parser: &mut Parser<F>, id: i64
-  ) -> Result<Option<element::Node>,Error> {
-    if let Some(node) = self.node_cache.lock().await.get(&id) {
-      return Ok(Some(node.clone()));
-    }
-    for (offset,len) in self.scan_table.get_node_blob_offsets_for_id(id) {
-      if let Some(p) = self.offset_pending.get(&offset) {
-        p.lock().await;
-      }
-      if let Some(node) = self.node_cache.lock().await.get(&id) {
-        return Ok(Some(node.clone()));
-      }
-      let items = self.get_items(parser, offset, len).await?;
-      for item in items {
-        match item {
-          element::Element::Node(node) => {
-            if node.id == id { return Ok(Some(node)) }
-          },
-          _ => { break }
-        }
-      }
-    }
-    Ok(None)
-  }
-  pub async fn get_way<F: std::io::Read+std::io::Seek>(
-    &mut self, parser: &mut Parser<F>, id: i64
-  ) -> Result<Option<element::Way>,Error> {
-    if let Some(way) = self.way_cache.lock().await.get(&id) {
-      return Ok(Some(way.clone()));
-    }
-    for (offset,len) in self.scan_table.get_way_blob_offsets_for_id(id) {
-      if let Some(p) = self.offset_pending.get(&offset) {
-        p.lock().await;
-      }
-      if let Some(way) = self.way_cache.lock().await.get(&id) {
-        return Ok(Some(way.clone()));
-      }
-      let items = self.get_items(parser, offset, len).await?;
-      for item in items {
-        match item {
-          element::Element::Way(way) => {
-            if way.id == id { return Ok(Some(way)) }
-          },
-          _ => { break }
-        }
-      }
-    }
-    Ok(None)
-  }
-  pub async fn get_relation<F: std::io::Read+std::io::Seek>(
-    &mut self, parser: &mut Parser<F>, id: i64
-  ) -> Result<Option<element::Relation>,Error> {
-    if let Some(relation) = self.relation_cache.lock().await.get(&id) {
-      return Ok(Some(relation.clone()));
-    }
-    for (offset,len) in self.scan_table.get_relation_blob_offsets_for_id(id) {
-      if let Some(p) = self.offset_pending.get(&offset) {
-        p.lock().await;
-      }
-      if let Some(relation) = self.relation_cache.lock().await.get(&id) {
-        return Ok(Some(relation.clone()));
-      }
-      let items = self.get_items(parser, offset, len).await?;
-      for item in items {
-        match item {
-          element::Element::Relation(relation) => {
-            if relation.id == id { return Ok(Some(relation)) }
-          },
-          _ => { break }
-        }
-      }
-    }
-    Ok(None)
   }
 }
