@@ -54,7 +54,64 @@ impl Ingest {
     };
 
 
-    let mnactive = Arc::new(Mutex::new(2));
+    let mnactive = Arc::new(Mutex::new(3));
+
+    { // node thread
+      let place_other = self.place_other.clone();
+      let file = pbf_file.to_string();
+      let bs = batch_sender.clone();
+      let table = scan_table.clone();
+      let nactive = mnactive.clone();
+      work.push(task::spawn(async move {
+        let mut element_counter = 0;
+        let mut batch = vec![];
+        let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+        let node_receiver = {
+          let scans = (0..nproc).map(|_| {
+            let h = std::fs::File::open(&file).unwrap();
+            let parser = Parser::new(Box::new(h));
+            Scan::from_table(parser, table.clone())
+          }).collect::<Vec<_>>();
+          denorm::get_nodes_ch(scans, 10_000).await
+        };
+        while let Ok(nodes) = node_receiver.recv().await {
+          for node in nodes.iter() {
+            element_counter += 1;
+            let tags = node.tags.iter()
+              .map(|(k,v)| (k.as_str(),v.as_str()))
+              .collect::<Vec<(&str,&str)>>();
+            let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
+            if ft == place_other { continue }
+            let r_encoded = georender_pack::encode::node_from_parsed(
+              (node.id as u64)*3+0, (node.lon as f32, node.lat as f32), ft, &labels
+            );
+            if let Ok(encoded) = r_encoded {
+              if encoded.is_empty() { continue }
+              batch.push(eyros::Row::Insert(
+                (
+                  eyros::Coord::Scalar(node.lon as f32),
+                  eyros::Coord::Scalar(node.lat as f32)
+                ),
+                encoded.into()
+              ));
+              if batch.len() >= BATCH_SEND_SIZE {
+                bs.send((element_counter,batch.clone())).await.unwrap();
+                batch.clear();
+                element_counter = 0;
+              }
+            }
+          }
+        }
+        if !batch.is_empty() {
+          bs.send((element_counter,batch)).await.unwrap();
+        }
+        {
+          let mut n = nactive.lock().await;
+          *n -= 1;
+          if *n == 0 { bs.close(); }
+        }
+      }));
+    }
 
     { // way thread
       let place_other = self.place_other.clone();
@@ -155,24 +212,6 @@ impl Ingest {
               element_counter += 1;
               match item {
                 element::Element::Node(node) => {
-                  let tags = node.tags.iter()
-                    .map(|(k,v)| (k.as_str(),v.as_str()))
-                    .collect::<Vec<(&str,&str)>>();
-                  let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
-                  if ft == place_other { continue }
-                  let r_encoded = georender_pack::encode::node_from_parsed(
-                    (node.id as u64)*3+0, (node.lon as f32, node.lat as f32), ft, &labels
-                  );
-                  if let Ok(encoded) = r_encoded {
-                    if encoded.is_empty() { continue }
-                    batch.push(eyros::Row::Insert(
-                      (
-                        eyros::Coord::Scalar(node.lon as f32),
-                        eyros::Coord::Scalar(node.lat as f32)
-                      ),
-                      encoded.into()
-                    ));
-                  }
                 },
                 element::Element::Way(way) => {
                 },
