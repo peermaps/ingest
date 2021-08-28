@@ -40,7 +40,10 @@ impl Ingest {
   }
 
   // loop over the pbf, denormalize the records, georender-pack the data into eyros
-  pub async fn ingest(&mut self, pbf_file: &str) -> () {
+  pub async fn ingest(
+    &mut self, pbf_file: &str, channel_size: usize,
+    way_batch_size: usize, relation_batch_size: usize,
+  ) -> () {
     const BATCH_SEND_SIZE: usize = 10_000;
     const BATCH_SIZE: usize = 100_000;
     self.progress.write().await.start("ingest");
@@ -73,7 +76,7 @@ impl Ingest {
             let parser = Parser::new(Box::new(h));
             Scan::from_table(parser, table.clone())
           }).collect::<Vec<_>>();
-          denorm::get_nodes_ch(scans, 10_000).await
+          denorm::get_nodes_ch(scans, channel_size).await
         };
         while let Ok(nodes) = node_receiver.recv().await {
           for node in nodes.iter() {
@@ -133,7 +136,7 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_ways(scans, 10_000, offset, 10_000_000).await
+              denorm::get_ways(scans, channel_size, offset, way_batch_size).await
             };
             let way_ref_table = denorm::way_ref_table(&ways);
             let node_receiver = {
@@ -142,7 +145,7 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_nodes_bare_ch(scans, 10_000).await
+              denorm::get_nodes_bare_ch(scans, channel_size).await
             };
             let all_node_deps = denorm::denormalize_ways(&way_ref_table, node_receiver).await.unwrap();
             for way in ways {
@@ -222,7 +225,7 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_relations(scans, 10_000, offset, 1_000_000).await
+              denorm::get_relations(scans, channel_size, offset, relation_batch_size).await
             };
             let relation_ref_table = denorm::relation_ref_table(&relations);
             let node_receiver = {
@@ -231,7 +234,7 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_nodes_bare_ch(scans, 10_000).await
+              denorm::get_nodes_bare_ch(scans, channel_size).await
             };
             let way_receiver = {
               let scans = (0..nproc).map(|_| {
@@ -239,7 +242,7 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_ways_bare_ch(scans, 10_000).await
+              denorm::get_ways_bare_ch(scans, channel_size).await
             };
             let (all_node_deps,all_way_deps) = denorm::denormalize_relations(
               &relation_ref_table, node_receiver, way_receiver

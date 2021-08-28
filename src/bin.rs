@@ -44,6 +44,21 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let pbf_file = o_pbf_file.unwrap();
+      let channel_size: usize = argv.get("channel_size")
+        .or_else(|| argv.get("channel-size"))
+        .and_then(|x| x.first())
+        .map(|x| x.replace("_","").parse().expect("invalid number for --channel_size"))
+        .unwrap_or(10_000);
+      let way_batch_size: usize = argv.get("way_batch_size")
+        .or_else(|| argv.get("way-batch-size"))
+        .and_then(|x| x.first())
+        .map(|x| x.replace("_","").parse().expect("invalid number for --way_batch_size"))
+        .unwrap_or(10_000_000);
+      let relation_batch_size = argv.get("relation_batch_size")
+        .or_else(|| argv.get("relation-batch-size"))
+        .and_then(|x| x.first())
+        .map(|x| x.replace("_","").parse().expect("invalid number for --relation_batch_size"))
+        .unwrap_or(500_000);
       let edb_dir = get_dirs(&argv);
       if edb_dir.is_none() {
         print!["{}", usage(&args)];
@@ -54,10 +69,10 @@ async fn run() -> Result<(),Error> {
         &["ingest"]
       );
       if argv.contains_key("no-monitor") {
-        ingest.ingest(&pbf_file).await;
+        ingest.ingest(&pbf_file, channel_size, way_batch_size, relation_batch_size).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
-        ingest.ingest(&pbf_file).await;
+        ingest.ingest(&pbf_file, channel_size, way_batch_size, relation_batch_size).await;
         p.end().await;
       }
     },
