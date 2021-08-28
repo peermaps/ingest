@@ -1,5 +1,5 @@
 use crate::Error;
-use async_std::{channel,task};
+use async_std::{channel,task,prelude::*};
 use osmpbf_parser::{Parser,ScanTable,element,Element};
 use futures::future::join_all;
 use std::ops::Bound::Included;
@@ -9,7 +9,7 @@ pub async fn parallel_scan<F: Read+Seek+Send+'static>(
   mut parsers: Vec<Parser<F>>, start: u64, end: u64
 ) -> Result<ScanTable,Error> {
   let (offset_sender,offset_receiver) = channel::unbounded();
-  {
+  let offset_work = {
     let mut parser = parsers.pop().unwrap();
     task::spawn(async move {
       let mut offset = start;
@@ -24,8 +24,8 @@ pub async fn parallel_scan<F: Read+Seek+Send+'static>(
         offset += len;
       }
       offset_sender.close();
-    });
-  }
+    })
+  };
 
   let mut table_work: Vec<task::JoinHandle<Result<ScanTable,Error>>> = vec![];
   for mut parser in parsers {
@@ -88,7 +88,8 @@ pub async fn parallel_scan<F: Read+Seek+Send+'static>(
   }
 
   let mut scan_table = ScanTable::default();
-  for table in join_all(table_work).await {
+  let (tables,_) = join_all(table_work).join(offset_work).await;
+  for table in tables {
     scan_table.extend(&table?)
   }
   Ok(scan_table)

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use osmpbf_parser::{Scan,Element,element};
 use std::io::{Read,Seek};
 use async_std::{channel,sync::{Arc,Mutex},task};
+use futures::future::join_all;
 
 pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
   scans: Vec<Scan<F>>, n: usize
@@ -14,11 +15,12 @@ pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let node_s = node_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    task::spawn(async move {
+    scan_work.push(task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -35,13 +37,14 @@ pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { node_s.close(); }
       }
-    });
+    }));
   }
   {
     let mut n = mnactive.lock().await;
     *n -= 1;
     if *n == 0 { node_sender.close(); }
   }
+  join_all(scan_work).await;
   node_receiver
 }
 
@@ -55,11 +58,12 @@ pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let node_s = node_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    task::spawn(async move {
+    scan_work.push(task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -77,13 +81,14 @@ pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { node_s.close(); }
       }
-    });
+    }));
   }
   {
     let mut n = mnactive.lock().await;
     *n -= 1;
     if *n == 0 { node_sender.close(); }
   }
+  join_all(scan_work).await;
   node_receiver
 }
 
@@ -97,11 +102,12 @@ pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let way_s = way_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    task::spawn(async move {
+    scan_work.push(task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -118,16 +124,16 @@ pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { way_s.close(); }
       }
-    });
+    }));
   }
   {
     let mut n = mnactive.lock().await;
     *n -= 1;
     if *n == 0 { way_sender.close(); }
   }
+  join_all(scan_work).await;
   way_receiver
 }
-
 
 pub async fn get_ways<F: Read+Seek+Send+'static>(
   mut scans: Vec<Scan<F>>, ch_bound: usize, start: u64, n: usize,
@@ -140,21 +146,25 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
   let (offset_sender,offset_receiver) = channel::unbounded();
   let mut count = 0;
   let mut next_offset = None;
-  for (offset,byte_len,len) in scans[0].get_way_blob_offsets() {
+  let mut offsets = scans[0].get_way_blob_offsets().collect::<Vec<_>>();
+  offsets.sort_unstable();
+  for (offset,byte_len,len) in offsets {
     if offset < start { continue }
-    count += len;
-    if count > n {
+    if count+len > n && offset > start {
       next_offset = Some(offset);
       break;
     }
+    count += len;
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  assert![next_offset != Some(start), "start offset is the same as next_offset (={})", start];
+  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let way_s = way_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    task::spawn(async move {
+    scan_work.push(task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -172,7 +182,7 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { way_s.close(); }
       }
-    });
+    }));
   }
   {
     let mut n = mnactive.lock().await;
@@ -183,6 +193,7 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
   while let Ok(way_group) = way_receiver.recv().await {
     ways.extend(way_group);
   }
+  join_all(scan_work).await;
   (next_offset,ways)
 }
 
@@ -197,21 +208,25 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
   let (offset_sender,offset_receiver) = channel::unbounded();
   let mut count = 0;
   let mut next_offset = None;
-  for (offset,byte_len,len) in scans[0].get_relation_blob_offsets() {
+  let mut offsets = scans[0].get_relation_blob_offsets().collect::<Vec<_>>();
+  offsets.sort_unstable();
+  for (offset,byte_len,len) in offsets {
     if offset < start { continue }
-    count += len;
-    if count > n {
+    if count+len > n && offset > start {
       next_offset = Some(offset);
       break;
     }
+    count += len;
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  assert![next_offset != Some(start), "start offset is the same as next_offset (={})", start];
+  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let relation_s = relation_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    task::spawn(async move {
+    scan_work.push(task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -229,7 +244,7 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { relation_s.close(); }
       }
-    });
+    }));
   }
   {
     let mut n = mnactive.lock().await;
@@ -240,6 +255,7 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
   while let Ok(relation_group) = relation_receiver.recv().await {
     relations.extend(relation_group);
   }
+  join_all(scan_work).await;
   (next_offset,relations)
 }
 
