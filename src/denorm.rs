@@ -7,7 +7,7 @@ use async_std::{channel,sync::{Arc,Mutex},task};
 pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
   scans: Vec<Scan<F>>, n: usize
 ) -> channel::Receiver<Vec<(i64,(f64,f64))>> {
-  let mnactive = Arc::new(Mutex::new(scans.len()));
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
   let (node_sender,node_receiver) = channel::bounded(n);
   let (offset_sender,offset_receiver) = channel::unbounded();
   for (offset,byte_len,_len) in scans[0].get_node_blob_offsets() {
@@ -37,13 +37,18 @@ pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
       }
     });
   }
+  {
+    let mut n = mnactive.lock().await;
+    *n -= 1;
+    if *n == 0 { node_sender.close(); }
+  }
   node_receiver
 }
 
 pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
   scans: Vec<Scan<F>>, n: usize
 ) -> channel::Receiver<Vec<element::Node>> {
-  let mnactive = Arc::new(Mutex::new(scans.len()));
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
   let (node_sender,node_receiver) = channel::bounded(n);
   let (offset_sender,offset_receiver) = channel::unbounded();
   for (offset,byte_len,_len) in scans[0].get_node_blob_offsets() {
@@ -74,13 +79,18 @@ pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
       }
     });
   }
+  {
+    let mut n = mnactive.lock().await;
+    *n -= 1;
+    if *n == 0 { node_sender.close(); }
+  }
   node_receiver
 }
 
 pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
   mut scans: Vec<Scan<F>>, n: usize
 ) -> channel::Receiver<Vec<(i64,Vec<i64>)>> {
-  let mnactive = Arc::new(Mutex::new(scans.len()));
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
   let (way_sender,way_receiver) = channel::bounded(n);
   let (offset_sender,offset_receiver) = channel::unbounded();
   for (offset,byte_len,_len) in scans[0].get_way_blob_offsets() {
@@ -110,6 +120,11 @@ pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
       }
     });
   }
+  {
+    let mut n = mnactive.lock().await;
+    *n -= 1;
+    if *n == 0 { way_sender.close(); }
+  }
   way_receiver
 }
 
@@ -117,7 +132,7 @@ pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
 pub async fn get_ways<F: Read+Seek+Send+'static>(
   mut scans: Vec<Scan<F>>, ch_bound: usize, start: u64, n: usize,
 ) -> (Option<u64>,Vec<element::Way>) {
-  let mnactive = Arc::new(Mutex::new(scans.len()));
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
   let (way_sender,way_receiver): (
     channel::Sender<Vec<element::Way>>,
     channel::Receiver<Vec<element::Way>>,
@@ -159,6 +174,11 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
       }
     });
   }
+  {
+    let mut n = mnactive.lock().await;
+    *n -= 1;
+    if *n == 0 { way_sender.close(); }
+  }
   let mut ways = vec![];
   while let Ok(way_group) = way_receiver.recv().await {
     ways.extend(way_group);
@@ -169,7 +189,7 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
 pub async fn get_relations<F: Read+Seek+Send+'static>(
   mut scans: Vec<Scan<F>>, ch_bound: usize, start: u64, n: usize,
 ) -> (Option<u64>,Vec<element::Relation>) {
-  let mnactive = Arc::new(Mutex::new(scans.len()));
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
   let (relation_sender,relation_receiver): (
     channel::Sender<Vec<element::Relation>>,
     channel::Receiver<Vec<element::Relation>>,
@@ -210,6 +230,11 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
         if *n == 0 { relation_s.close(); }
       }
     });
+  }
+  {
+    let mut n = mnactive.lock().await;
+    *n -= 1;
+    if *n == 0 { relation_sender.close(); }
   }
   let mut relations = vec![];
   while let Ok(relation_group) = relation_receiver.recv().await {
