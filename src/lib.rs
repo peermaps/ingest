@@ -338,7 +338,7 @@ impl Ingest {
             db.batch(&batch).await.unwrap();
             sync_count += batch.len();
             batch.clear();
-            if sync_count > 5_000_000 {
+            if sync_count > 500_000 {
               db.sync().await.unwrap();
               sync_count = 0;
             }
