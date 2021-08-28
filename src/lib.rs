@@ -220,7 +220,7 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_relations(scans, 10_000, offset, 100_000).await
+              denorm::get_relations(scans, 10_000, offset, 1_000_000).await
             };
             let relation_ref_table = denorm::relation_ref_table(&relations);
             let node_receiver = {
