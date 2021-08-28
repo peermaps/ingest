@@ -9,6 +9,8 @@ mod progress;
 pub mod denorm;
 pub use progress::Progress;
 use osmpbf_parser::{Parser,Scan};
+mod par_scan;
+use par_scan::parallel_scan;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
@@ -45,14 +47,14 @@ impl Ingest {
     let mut work = vec![];
     let (batch_sender,batch_receiver) = channel::bounded(100);
     let scan_table = {
-      let h = std::fs::File::open(pbf_file).unwrap();
-      let pbf_len = h.metadata().unwrap().len();
-      let mut scan = Scan::new(Parser::new(Box::new(h)));
-      scan.scan(0, pbf_len).unwrap();
-      let scan_table = scan.table.clone();
-      scan_table
+      let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+      let parsers = (0..nproc).map(|_| {
+        let h = std::fs::File::open(pbf_file).unwrap();
+        Parser::new(Box::new(h))
+      }).collect::<Vec<_>>();
+      let file_size = std::fs::File::open(pbf_file).unwrap().metadata().unwrap().len();
+      parallel_scan(parsers, 0, file_size).await.unwrap()
     };
-
     let mnactive = Arc::new(Mutex::new(4));
 
     { // node thread
