@@ -69,7 +69,6 @@ impl Ingest {
       work.push(task::spawn(async move {
         let mut element_counter = 0;
         let mut batch = vec![];
-        let mut node_count = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
         let node_receiver = {
           let scans = (0..nproc).map(|_| {
@@ -82,7 +81,6 @@ impl Ingest {
         while let Ok(nodes) = node_receiver.recv().await {
           for node in nodes.iter() {
             element_counter += 1;
-            node_count += 1;
             let tags = node.tags.iter()
               .map(|(k,v)| (k.as_str(),v.as_str()))
               .collect::<Vec<(&str,&str)>>();
@@ -128,7 +126,6 @@ impl Ingest {
       work.push(task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
-        let mut way_count = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
         {
           let mut offset = 0;
@@ -153,7 +150,6 @@ impl Ingest {
             let all_node_deps = denorm::denormalize_ways(&way_ref_table, node_receiver).await.unwrap();
             for way in ways {
               element_counter += 1;
-              way_count += 1;
               let tags = way.tags.iter()
                 .map(|(k,v)| (k.as_str(),v.as_str()))
                 .collect::<Vec<(&str,&str)>>();
@@ -219,7 +215,6 @@ impl Ingest {
       work.push(task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
-        let mut relation_count = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
         {
           let mut offset = 0;
@@ -255,7 +250,6 @@ impl Ingest {
 
             for relation in relations {
               element_counter += 1;
-              relation_count += 1;
               let tags = relation.tags.iter()
                 .map(|(k,v)| (k.as_str(),v.as_str()))
                 .collect::<Vec<(&str,&str)>>();
