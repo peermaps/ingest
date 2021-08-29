@@ -1,14 +1,12 @@
 #![warn(clippy::future_not_send)]
 #![feature(async_closure,backtrace,available_concurrency)]
-pub mod encoder;
-pub use encoder::*;
 pub mod error;
 pub use error::*;
 mod value;
 mod progress;
 pub mod denorm;
 pub use progress::Progress;
-use osmpbf_parser::{Parser,Scan,element};
+use osmpbf_parser::{Parser,Scan,ScanTable,element};
 mod par_scan;
 use par_scan::parallel_scan;
 
@@ -25,30 +23,27 @@ type V = value::V;
 pub type EDB = eyros::DB<random_access_disk::RandomAccessDisk,T,P,V>;
 
 pub struct Ingest {
-  db: Arc<Mutex<EDB>>,
   place_other: u64,
   pub progress: Arc<RwLock<Progress>>,
 }
 
+pub struct IngestOptions {
+  pub channel_size: usize,
+  pub way_batch_size: usize,
+  pub relation_batch_size: usize,
+}
+
 impl Ingest {
-  pub fn new(db: EDB, stages: &[&str]) -> Self {
+  pub fn new(stages: &[&str]) -> Self {
     Self {
-      db: Arc::new(Mutex::new(db)),
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
       progress: Arc::new(RwLock::new(Progress::new(stages))),
     }
   }
 
-  // loop over the pbf, denormalize the records, georender-pack the data into eyros
-  pub async fn ingest(
-    &mut self, pbf_file: &str, channel_size: usize,
-    way_batch_size: usize, relation_batch_size: usize,
-  ) -> () {
-    const BATCH_SEND_SIZE: usize = 10_000;
-    const BATCH_SIZE: usize = 100_000;
-    self.progress.write().await.start("ingest");
-    let mut work = vec![];
-    let (batch_sender,batch_receiver) = channel::bounded(100);
+  // build the scan table
+  pub async fn scan(&mut self, pbf_file: &str) -> ScanTable {
+    self.progress.write().await.start("scan");
     let scan_table = {
       let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
       let parsers = (0..nproc).map(|_| {
@@ -58,6 +53,20 @@ impl Ingest {
       let file_size = std::fs::File::open(pbf_file).unwrap().metadata().unwrap().len();
       parallel_scan(parsers, 0, file_size).await.unwrap()
     };
+    self.progress.write().await.end("scan");
+    scan_table
+  }
+
+  // loop over the pbf, denormalize the records, georender-pack the data into eyros
+  pub async fn ingest(
+    &mut self, mut db: EDB, pbf_file: &str, scan_table: ScanTable,
+    ingest_options: &IngestOptions
+  ) -> () {
+    const BATCH_SEND_SIZE: usize = 10_000;
+    const BATCH_SIZE: usize = 100_000;
+    self.progress.write().await.start("ingest");
+    let mut work = vec![];
+    let (batch_sender,batch_receiver) = channel::bounded(100);
     let mnactive = Arc::new(Mutex::new(4));
 
     { // node thread
@@ -66,6 +75,7 @@ impl Ingest {
       let bs = batch_sender.clone();
       let table = scan_table.clone();
       let nactive = mnactive.clone();
+      let channel_size = ingest_options.channel_size;
       work.push(task::spawn(async move {
         let mut element_counter = 0;
         let mut batch = vec![];
@@ -123,6 +133,8 @@ impl Ingest {
       let bs = batch_sender.clone();
       let table = scan_table.clone();
       let nactive = mnactive.clone();
+      let channel_size = ingest_options.channel_size;
+      let way_batch_size = ingest_options.way_batch_size;
       work.push(task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
@@ -212,6 +224,8 @@ impl Ingest {
       let bs = batch_sender.clone();
       let table = scan_table.clone();
       let nactive = mnactive.clone();
+      let channel_size = ingest_options.channel_size;
+      let relation_batch_size = ingest_options.relation_batch_size;
       work.push(task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
@@ -332,9 +346,7 @@ impl Ingest {
 
     {
       let progress = self.progress.clone();
-      let db_c = self.db.clone();
       work.push(task::spawn_local(async move {
-        let mut db = db_c.lock().await;
         let mut sync_count = 0;
         let mut batch = vec![];
         while let Ok((element_counter,rows)) = batch_receiver.recv().await {

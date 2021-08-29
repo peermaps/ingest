@@ -1,8 +1,11 @@
 #![feature(backtrace)]
-use peermaps_ingest::{Ingest,EDB,Progress};
+use peermaps_ingest::{Ingest,IngestOptions,EDB,Progress};
 use async_std::{prelude::*,sync::{Arc,RwLock},task,stream};
+use std::io::{Write,Read};
+use desert::{ToBytes,FromBytes};
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
+use osmpbf_parser::ScanTable;
 
 #[async_std::main]
 async fn main() -> Result<(),Error> {
@@ -35,6 +38,109 @@ async fn run() -> Result<(),Error> {
     None => print!["{}", usage(&args)],
     Some("help") => print!["{}", usage(&args)],
     Some("version") => print!["{}", get_version()],
+    Some("scan") => {
+      let scan_file = argv.get("scan_file").or_else(|| argv.get("scan-file"))
+        .and_then(|x| x.first())
+        .cloned()
+        .or_else(|| {
+          argv.get("outdir").or_else(|| argv.get("o"))
+            .and_then(|x| x.first())
+            .and_then(|d| {
+              let mut p = std::path::PathBuf::from(d);
+              p.push("scan");
+              p.to_str().map(|s| s.to_string())
+            })
+        })
+        .expect("could not infer --scan_file")
+      ;
+      let o_pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
+        .and_then(|x| x.first());
+      if o_pbf_file.is_none() {
+        println!["--pbf or -f option required\n"];
+        print!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let pbf_file = o_pbf_file.unwrap();
+      let mut ingest = Ingest::new(&["scan"]);
+      let scan_table = {
+        if argv.contains_key("no-monitor") {
+          ingest.scan(&pbf_file).await
+        } else {
+          let mut p = Monitor::open(ingest.progress.clone());
+          let scan_table = ingest.scan(&pbf_file).await;
+          p.end().await;
+          scan_table
+        }
+      };
+      let mut file = std::fs::File::create(scan_file)?;
+      file.write_all(&scan_table.to_bytes()?)?;
+    },
+    Some("ingest_from_scan") | Some("ingest-from-scan") => {
+      let scan_file = argv.get("scan_file").or_else(|| argv.get("scan-file"))
+        .and_then(|x| x.first())
+        .cloned()
+        .or_else(|| {
+          argv.get("outdir").or_else(|| argv.get("o"))
+            .and_then(|x| x.first())
+            .and_then(|d| {
+              let mut p = std::path::PathBuf::from(&*d);
+              p.push("scan");
+              p.to_str().map(|s| s.to_string())
+            })
+        })
+        .expect("could not infer --scan_file")
+      ;
+      let scan_table = {
+        let mut file = std::fs::File::open(scan_file)?;
+        let mut buf = vec![];
+        file.read_to_end(&mut buf)?;
+        ScanTable::from_bytes(&buf)?.1
+      };
+      let o_pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
+        .and_then(|x| x.first());
+      if o_pbf_file.is_none() {
+        println!["--pbf or -f option required\n"];
+        print!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let pbf_file = o_pbf_file.unwrap();
+      let channel_size: usize = argv.get("channel_size")
+        .or_else(|| argv.get("channel-size"))
+        .and_then(|x| x.first())
+        .map(|x| x.replace("_","").parse().expect("invalid number for --channel_size"))
+        .unwrap_or(1_000);
+      let way_batch_size: usize = argv.get("way_batch_size")
+        .or_else(|| argv.get("way-batch-size"))
+        .and_then(|x| x.first())
+        .map(|x| x.replace("_","").parse().expect("invalid number for --way_batch_size"))
+        .unwrap_or(10_000_000);
+      let relation_batch_size = argv.get("relation_batch_size")
+        .or_else(|| argv.get("relation-batch-size"))
+        .and_then(|x| x.first())
+        .map(|x| x.replace("_","").parse().expect("invalid number for --relation_batch_size"))
+        .unwrap_or(500_000);
+      let edb_dir = get_dirs(&argv);
+      if edb_dir.is_none() {
+        print!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let mut ingest = Ingest::new(&["ingest"]);
+      if argv.contains_key("no-monitor") {
+        ingest.ingest(
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          &pbf_file, scan_table,
+          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+        ).await;
+      } else {
+        let mut p = Monitor::open(ingest.progress.clone());
+        ingest.ingest(
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          &pbf_file, scan_table,
+          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+        ).await;
+        p.end().await;
+      }
+    },
     Some("ingest") => {
       let o_pbf_file = argv.get("pbf").or_else(|| argv.get("f"))
         .and_then(|x| x.first());
@@ -64,15 +170,22 @@ async fn run() -> Result<(),Error> {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
-      let mut ingest = Ingest::new(
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-        &["ingest"]
-      );
+      let mut ingest = Ingest::new(&["scan","ingest"]);
       if argv.contains_key("no-monitor") {
-        ingest.ingest(&pbf_file, channel_size, way_batch_size, relation_batch_size).await;
+        let scan_table = ingest.scan(&pbf_file).await;
+        ingest.ingest(
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          &pbf_file, scan_table,
+          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+        ).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
-        ingest.ingest(&pbf_file, channel_size, way_batch_size, relation_batch_size).await;
+        let scan_table = ingest.scan(&pbf_file).await;
+        ingest.ingest(
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          &pbf_file, scan_table,
+          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+        ).await;
         p.end().await;
       }
     },
@@ -95,10 +208,21 @@ async fn open_eyros(file: &std::path::Path) -> Result<EDB,Error> {
 fn usage(args: &[String]) -> String {
   format![indoc::indoc![r#"usage: {} COMMAND {{OPTIONS}}
 
-    ingest - runs pbf and process phases
+    ingest - scans and processes a pbf
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
       -e, --edb     eyros db dir to write spatial data
-      -o, --outdir  write level and eyros db in this dir in xq/ and edb/
+      -o, --outdir  write eyros db in this dir in edb/
+
+    scan - scans a pbf, outputting a scan file
+      -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+      -o, --outdir  write a scan file in this dir
+      --scan_file   write scan file with explicit path
+
+    ingest-from-scan - process a pbf from an existing scan
+      -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+      -e, --edb     eyros db dir to write spatial data
+      -o, --outdir  write eyros db in this dir in edb/ and read scan file
+      --scan_file   read scan file with explicit path
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
