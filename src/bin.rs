@@ -104,21 +104,7 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let pbf_file = o_pbf_file.unwrap();
-      let channel_size: usize = argv.get("channel_size")
-        .or_else(|| argv.get("channel-size"))
-        .and_then(|x| x.first())
-        .map(|x| x.replace("_","").parse().expect("invalid number for --channel_size"))
-        .unwrap_or(1_000);
-      let way_batch_size: usize = argv.get("way_batch_size")
-        .or_else(|| argv.get("way-batch-size"))
-        .and_then(|x| x.first())
-        .map(|x| x.replace("_","").parse().expect("invalid number for --way_batch_size"))
-        .unwrap_or(10_000_000);
-      let relation_batch_size = argv.get("relation_batch_size")
-        .or_else(|| argv.get("relation-batch-size"))
-        .and_then(|x| x.first())
-        .map(|x| x.replace("_","").parse().expect("invalid number for --relation_batch_size"))
-        .unwrap_or(500_000);
+      let ingest_options = get_ingest_options(&argv);
       let edb_dir = get_dirs(&argv);
       if edb_dir.is_none() {
         print!["{}", usage(&args)];
@@ -129,14 +115,13 @@ async fn run() -> Result<(),Error> {
         ingest.ingest(
           open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
           &pbf_file, scan_table,
-          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+          &ingest_options
         ).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
         ingest.ingest(
           open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-          &pbf_file, scan_table,
-          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+          &pbf_file, scan_table, &ingest_options
         ).await;
         p.end().await;
       }
@@ -150,21 +135,7 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let pbf_file = o_pbf_file.unwrap();
-      let channel_size: usize = argv.get("channel_size")
-        .or_else(|| argv.get("channel-size"))
-        .and_then(|x| x.first())
-        .map(|x| x.replace("_","").parse().expect("invalid number for --channel_size"))
-        .unwrap_or(1_000);
-      let way_batch_size: usize = argv.get("way_batch_size")
-        .or_else(|| argv.get("way-batch-size"))
-        .and_then(|x| x.first())
-        .map(|x| x.replace("_","").parse().expect("invalid number for --way_batch_size"))
-        .unwrap_or(10_000_000);
-      let relation_batch_size = argv.get("relation_batch_size")
-        .or_else(|| argv.get("relation-batch-size"))
-        .and_then(|x| x.first())
-        .map(|x| x.replace("_","").parse().expect("invalid number for --relation_batch_size"))
-        .unwrap_or(500_000);
+      let ingest_options = get_ingest_options(&argv);
       let edb_dir = get_dirs(&argv);
       if edb_dir.is_none() {
         print!["{}", usage(&args)];
@@ -175,16 +146,14 @@ async fn run() -> Result<(),Error> {
         let scan_table = ingest.scan(&pbf_file).await;
         ingest.ingest(
           open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-          &pbf_file, scan_table,
-          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+          &pbf_file, scan_table, &ingest_options
         ).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
         let scan_table = ingest.scan(&pbf_file).await;
         ingest.ingest(
           open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
-          &pbf_file, scan_table,
-          &IngestOptions { channel_size, way_batch_size, relation_batch_size }
+          &pbf_file, scan_table, &ingest_options
         ).await;
         p.end().await;
       }
@@ -291,4 +260,54 @@ impl Monitor {
   pub async fn end(&mut self) {
     *self.stop.write().await = true;
   }
+}
+
+fn get_ingest_options(argv: &argmap::Map) -> IngestOptions {
+  let mut ingest_options = IngestOptions::default();
+  let o_channel_size = argv.get("channel_size")
+    .or_else(|| argv.get("channel-size"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --channel_size"));
+  if let Some(channel_size) = o_channel_size {
+    ingest_options.channel_size = channel_size;
+  }
+  let o_way_batch_size = argv.get("way_batch_size")
+    .or_else(|| argv.get("way-batch-size"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --way_batch_size"));
+  if let Some(way_batch_size) = o_way_batch_size {
+    ingest_options.way_batch_size = way_batch_size;
+  }
+  let o_relation_batch_size = argv.get("relation_batch_size")
+    .or_else(|| argv.get("relation-batch-size"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --relation_batch_size"));
+  if let Some(relation_batch_size) = o_relation_batch_size {
+    ingest_options.relation_batch_size = relation_batch_size;
+  }
+  let o_ingest_node = argv.get("no_ingest_node")
+    .or_else(|| argv.get("no_ingest_nodes"))
+    .or_else(|| argv.get("no-ingest-node"))
+    .or_else(|| argv.get("no-ingest-nodes"))
+    .map(|x| x.first());
+  if o_ingest_node.is_some() {
+    ingest_options.ingest_node = false;
+  }
+  let o_ingest_way = argv.get("no_ingest_way")
+    .or_else(|| argv.get("no_ingest_ways"))
+    .or_else(|| argv.get("no-ingest-way"))
+    .or_else(|| argv.get("no-ingest-ways"))
+    .map(|x| x.first());
+  if o_ingest_way.is_some() {
+    ingest_options.ingest_way = false;
+  }
+  let o_ingest_relation = argv.get("no_ingest_relation")
+    .or_else(|| argv.get("no_ingest_relations"))
+    .or_else(|| argv.get("no-ingest-relation"))
+    .or_else(|| argv.get("no-ingest-relations"))
+    .map(|x| x.first());
+  if o_ingest_relation.is_some() {
+    ingest_options.ingest_relation = false;
+  }
+  ingest_options
 }

@@ -31,6 +31,22 @@ pub struct IngestOptions {
   pub channel_size: usize,
   pub way_batch_size: usize,
   pub relation_batch_size: usize,
+  pub ingest_node: bool,
+  pub ingest_way: bool,
+  pub ingest_relation: bool,
+}
+
+impl Default for IngestOptions {
+  fn default() -> Self {
+    Self {
+      channel_size: 1_000,
+      way_batch_size: 10_000_000,
+      relation_batch_size: 1_000_000,
+      ingest_node: true,
+      ingest_way: true,
+      ingest_relation: true,
+    }
+  }
 }
 
 impl Ingest {
