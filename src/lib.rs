@@ -8,7 +8,7 @@ mod value;
 mod progress;
 pub mod denorm;
 pub use progress::Progress;
-use osmpbf_parser::{Parser,Scan};
+use osmpbf_parser::{Parser,Scan,element};
 mod par_scan;
 use par_scan::parallel_scan;
 
@@ -242,7 +242,8 @@ impl Ingest {
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_ways_bare_ch(scans, channel_size).await
+              let way_offsets = denorm::get_way_offsets_from_relations(&table, &relations);
+              denorm::get_ways_bare_ch_from_offsets(scans, channel_size, &way_offsets).await
             };
             let (all_node_deps,all_way_deps) = denorm::denormalize_relations(
               &relation_ref_table, node_receiver, way_receiver
@@ -258,6 +259,7 @@ impl Ingest {
               let is_area = osm_is_area::relation(&tags, &vec![1]);
               if !is_area { continue }
               let members = relation.members.iter()
+                .filter(|m| m.member_type == element::MemberType::Way)
                 .filter(|m| &m.role == "inner" || &m.role == "outer")
                 .map(|m| georender_pack::Member::new(
                   m.id as u64,

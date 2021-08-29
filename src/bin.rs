@@ -48,7 +48,7 @@ async fn run() -> Result<(),Error> {
         .or_else(|| argv.get("channel-size"))
         .and_then(|x| x.first())
         .map(|x| x.replace("_","").parse().expect("invalid number for --channel_size"))
-        .unwrap_or(10_000);
+        .unwrap_or(1_000);
       let way_batch_size: usize = argv.get("way_batch_size")
         .or_else(|| argv.get("way-batch-size"))
         .and_then(|x| x.first())

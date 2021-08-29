@@ -1,6 +1,6 @@
 use crate::error::Error;
-use std::collections::HashMap;
-use osmpbf_parser::{Scan,Element,element};
+use std::collections::{HashMap,HashSet};
+use osmpbf_parser::{Scan,ScanTable,Element,element};
 use std::io::{Read,Seek};
 use async_std::{channel,sync::{Arc,Mutex},task};
 use futures::future::join_all;
@@ -95,13 +95,30 @@ pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
 pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
   mut scans: Vec<Scan<F>>, n: usize
 ) -> channel::Receiver<Vec<(i64,Vec<i64>)>> {
-  let mnactive = Arc::new(Mutex::new(scans.len()+1));
-  let (way_sender,way_receiver) = channel::bounded(n);
   let (offset_sender,offset_receiver) = channel::unbounded();
   for (offset,byte_len,_len) in scans[0].get_way_blob_offsets() {
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  get_ways_bare_ch_from_offset_ch(scans, n, offset_receiver).await
+}
+
+pub async fn get_ways_bare_ch_from_offsets<F: Read+Seek+Send+'static>(
+  scans: Vec<Scan<F>>, n: usize, offsets: &[(u64,usize)]
+) -> channel::Receiver<Vec<(i64,Vec<i64>)>> {
+  let (offset_sender,offset_receiver) = channel::unbounded();
+  for (offset,byte_len) in offsets {
+    offset_sender.send((*offset,*byte_len)).await.unwrap();
+  }
+  offset_sender.close();
+  get_ways_bare_ch_from_offset_ch(scans, n, offset_receiver).await
+}
+
+pub async fn get_ways_bare_ch_from_offset_ch<F: Read+Seek+Send+'static>(
+  scans: Vec<Scan<F>>, n: usize, offset_receiver: channel::Receiver<(u64,usize)>,
+) -> channel::Receiver<Vec<(i64,Vec<i64>)>> {
+  let (way_sender,way_receiver) = channel::bounded(n);
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
   let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let way_s = way_sender.clone();
@@ -133,6 +150,24 @@ pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
   }
   join_all(scan_work).await;
   way_receiver
+}
+
+pub fn get_way_offsets_from_relations(
+  table: &ScanTable, relations: &[element::Relation]
+) -> Vec<(u64,usize)> {
+  let mut offsets = HashSet::new();
+  for relation in relations {
+    for m in relation.members.iter() {
+      if &m.role != "inner" && &m.role != "outer" { continue }
+      if m.member_type != element::MemberType::Way { continue }
+      for offset in table.get_way_blob_offsets_for_id(m.id) {
+        offsets.insert(offset);
+      }
+    }
+  }
+  offsets.iter()
+    .map(|(offset,byte_len,_len)| (*offset,*byte_len))
+    .collect::<Vec<_>>()
 }
 
 pub async fn get_ways<F: Read+Seek+Send+'static>(
