@@ -170,12 +170,13 @@ impl Ingest {
             };
             let way_ref_table = denorm::way_ref_table(&ways);
             let node_receiver = {
+              let node_offsets = denorm::get_node_offsets_from_ways(&table, &ways);
               let scans = (0..nproc).map(|_| {
                 let h = std::fs::File::open(&file).unwrap();
                 let parser = Parser::new(Box::new(h));
                 Scan::from_table(parser, table.clone())
               }).collect::<Vec<_>>();
-              denorm::get_nodes_bare_ch(scans, channel_size).await
+              denorm::get_nodes_bare_ch_from_offsets(scans, channel_size, &node_offsets).await
             };
             let all_node_deps = denorm::denormalize_ways(&way_ref_table, node_receiver).await.unwrap();
             for way in ways {
@@ -261,14 +262,6 @@ impl Ingest {
               denorm::get_relations(scans, channel_size, offset, relation_batch_size).await
             };
             let relation_ref_table = denorm::relation_ref_table(&relations);
-            let node_receiver = {
-              let scans = (0..nproc).map(|_| {
-                let h = std::fs::File::open(&file).unwrap();
-                let parser = Parser::new(Box::new(h));
-                Scan::from_table(parser, table.clone())
-              }).collect::<Vec<_>>();
-              denorm::get_nodes_bare_ch(scans, channel_size).await
-            };
             let way_receiver = {
               let scans = (0..nproc).map(|_| {
                 let h = std::fs::File::open(&file).unwrap();
@@ -278,9 +271,16 @@ impl Ingest {
               let way_offsets = denorm::get_way_offsets_from_relations(&table, &relations);
               denorm::get_ways_bare_ch_from_offsets(scans, channel_size, &way_offsets).await
             };
-            let (all_node_deps,all_way_deps) = denorm::denormalize_relations(
-              &relation_ref_table, node_receiver, way_receiver
-            ).await.unwrap();
+            let (all_node_deps,all_way_deps) = {
+              let scans = (0..nproc).map(|_| {
+                let h = std::fs::File::open(&file).unwrap();
+                let parser = Parser::new(Box::new(h));
+                Scan::from_table(parser, table.clone())
+              }).collect::<Vec<_>>();
+              denorm::denormalize_relations(
+                scans, channel_size, &relation_ref_table, way_receiver
+              ).await.unwrap()
+            };
 
             for relation in relations {
               element_counter += 1;

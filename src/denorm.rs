@@ -9,13 +9,30 @@ const CH_TAKE_LEN: usize = 10_000;
 pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
   scans: Vec<Scan<F>>, n: usize
 ) -> channel::Receiver<Vec<(i64,(f64,f64))>> {
-  let mnactive = Arc::new(Mutex::new(scans.len()+1));
-  let (node_sender,node_receiver) = channel::bounded(n);
   let (offset_sender,offset_receiver) = channel::unbounded();
   for (offset,byte_len,_len) in scans[0].get_node_blob_offsets() {
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
+  get_nodes_bare_ch_from_offset_ch(scans, n, offset_receiver).await
+}
+
+pub async fn get_nodes_bare_ch_from_offsets<F: Read+Seek+Send+'static>(
+  scans: Vec<Scan<F>>, n: usize, offsets: &[(u64,usize)]
+) -> channel::Receiver<Vec<(i64,(f64,f64))>> {
+  let (offset_sender,offset_receiver) = channel::unbounded();
+  for (offset,byte_len) in offsets {
+    offset_sender.send((*offset,*byte_len)).await.unwrap();
+  }
+  offset_sender.close();
+  get_nodes_bare_ch_from_offset_ch(scans, n, offset_receiver).await
+}
+
+pub async fn get_nodes_bare_ch_from_offset_ch<F: Read+Seek+Send+'static>(
+  scans: Vec<Scan<F>>, n: usize, offset_receiver: channel::Receiver<(u64,usize)>,
+) -> channel::Receiver<Vec<(i64,(f64,f64))>> {
+  let mnactive = Arc::new(Mutex::new(scans.len()+1));
+  let (node_sender,node_receiver) = channel::bounded(n);
   for mut scan in scans {
     let node_s = node_sender.clone();
     let offset_r = offset_receiver.clone();
@@ -99,6 +116,36 @@ pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
     if *n == 0 { node_sender.close(); }
   }
   node_receiver
+}
+
+pub fn get_node_offsets_from_ways(table: &ScanTable, ways: &[element::Way]) -> Vec<(u64,usize)> {
+  let mut offsets = HashSet::new();
+  for way in ways {
+    for node_id in &way.refs {
+      for offset in table.get_node_blob_offsets_for_id(*node_id) {
+        offsets.insert(offset);
+      }
+    }
+  }
+  offsets.iter()
+    .map(|(offset,byte_len,_len)| (*offset,*byte_len))
+    .collect::<Vec<_>>()
+}
+
+pub fn get_node_offsets_from_bare_ways(
+  table: &ScanTable, ways: &HashMap<i64,Vec<i64>>
+) -> Vec<(u64,usize)> {
+  let mut offsets = HashSet::new();
+  for (_,refs) in ways {
+    for node_id in refs {
+      for offset in table.get_node_blob_offsets_for_id(*node_id) {
+        offsets.insert(offset);
+      }
+    }
+  }
+  offsets.iter()
+    .map(|(offset,byte_len,_len)| (*offset,*byte_len))
+    .collect::<Vec<_>>()
 }
 
 pub async fn get_ways_bare_ch<F: Read+Seek+Send+'static>(
@@ -358,9 +405,9 @@ pub fn relation_ref_table(relations: &[element::Relation]) -> HashMap<i64,Vec<i6
   ref_table
 }
 
-pub async fn denormalize_relations(
+pub async fn denormalize_relations<F: Read+Seek+Send+'static>(
+  scans: Vec<Scan<F>>, channel_size: usize,
   relation_ref_table: &HashMap<i64,Vec<i64>>,
-  node_receiver: channel::Receiver<Vec<(i64,(f64,f64))>>,
   way_receiver: channel::Receiver<Vec<(i64,Vec<i64>)>>,
 ) -> Result<(HashMap<i64,(f64,f64)>,HashMap<i64,Vec<i64>>),Error> {
   let mut way_deps: HashMap<i64,Vec<i64>> = HashMap::new();
@@ -380,6 +427,10 @@ pub async fn denormalize_relations(
       }
     }
   }
+  let node_receiver = {
+    let node_offsets = get_node_offsets_from_bare_ways(&scans[0].table, &way_deps);
+    get_nodes_bare_ch_from_offsets(scans, channel_size, &node_offsets).await
+  };
   let node_deps = denormalize_ways(&way_ref_table, node_receiver).await?;
   Ok((node_deps, way_deps))
 }
