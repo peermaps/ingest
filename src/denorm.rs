@@ -290,7 +290,7 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
     *n -= 1;
     if *n == 0 { way_sender.close(); }
   }
-  let mut ways = vec![];
+  let mut ways = Vec::with_capacity(n);
   while let Ok(way_group) = way_receiver.recv().await {
     ways.extend(way_group);
   }
@@ -356,7 +356,7 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
     *n -= 1;
     if *n == 0 { relation_sender.close(); }
   }
-  let mut relations = vec![];
+  let mut relations = Vec::with_capacity(n);
   while let Ok(relation_group) = relation_receiver.recv().await {
     relations.extend(relation_group);
   }

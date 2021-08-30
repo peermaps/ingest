@@ -88,7 +88,7 @@ impl Ingest {
       let progress = self.progress.clone();
       work.push(task::spawn_local(async move {
         let mut sync_count = 0;
-        let mut batch = vec![];
+        let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
         while let Ok((element_counter,rows)) = batch_receiver.recv().await {
           batch.extend(rows);
           if batch.len() >= BATCH_SIZE {
@@ -120,7 +120,7 @@ impl Ingest {
       let channel_size = ingest_options.channel_size;
       task::spawn(async move {
         let mut element_counter = 0;
-        let mut batch = vec![];
+        let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
         let node_receiver = {
           let scans = (0..nproc).map(|_| {
@@ -179,7 +179,7 @@ impl Ingest {
       let channel_size = ingest_options.channel_size;
       let way_batch_size = ingest_options.way_batch_size;
       task::spawn(async move {
-        let mut batch = vec![];
+        let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
         let mut element_counter = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
         {
@@ -272,7 +272,7 @@ impl Ingest {
       let channel_size = ingest_options.channel_size;
       let relation_batch_size = ingest_options.relation_batch_size;
       task::spawn(async move {
-        let mut batch = vec![];
+        let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
         let mut element_counter = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
         {
