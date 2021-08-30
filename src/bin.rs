@@ -1,4 +1,8 @@
 #![feature(backtrace)]
+
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use peermaps_ingest::{Ingest,IngestOptions,EDB,Progress};
 use async_std::{prelude::*,sync::{Arc,RwLock},task,stream};
 use std::io::{Write,Read};
