@@ -84,6 +84,32 @@ impl Ingest {
     let (batch_sender,batch_receiver) = channel::bounded(100);
     let mnactive = Arc::new(Mutex::new(1));
 
+    {
+      let progress = self.progress.clone();
+      work.push(task::spawn_local(async move {
+        let mut sync_count = 0;
+        let mut batch = vec![];
+        while let Ok((element_counter,rows)) = batch_receiver.recv().await {
+          batch.extend(rows);
+          if batch.len() >= BATCH_SIZE {
+            db.batch(&batch).await.unwrap();
+            sync_count += batch.len();
+            batch.clear();
+            if sync_count > 500_000 {
+              db.sync().await.unwrap();
+              sync_count = 0;
+            }
+          }
+          progress.write().await.add("ingest", element_counter);
+        }
+        if !batch.is_empty() {
+          db.batch(&batch).await.unwrap();
+        }
+        db.sync().await.unwrap();
+        progress.write().await.add("ingest", 0);
+      }));
+    }
+
     if ingest_options.ingest_node { // node thread
       *mnactive.lock().await += 1;
       let place_other = self.place_other.clone();
@@ -92,7 +118,7 @@ impl Ingest {
       let table = scan_table.clone();
       let nactive = mnactive.clone();
       let channel_size = ingest_options.channel_size;
-      work.push(task::spawn(async move {
+      task::spawn(async move {
         let mut element_counter = 0;
         let mut batch = vec![];
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
@@ -140,7 +166,7 @@ impl Ingest {
           *n -= 1;
           if *n == 0 { bs.close(); }
         }
-      }));
+      }).await;
     }
 
     if ingest_options.ingest_way { // way thread
@@ -152,7 +178,7 @@ impl Ingest {
       let nactive = mnactive.clone();
       let channel_size = ingest_options.channel_size;
       let way_batch_size = ingest_options.way_batch_size;
-      work.push(task::spawn(async move {
+      task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
@@ -233,7 +259,7 @@ impl Ingest {
           *n -= 1;
           if *n == 0 { bs.close(); }
         }
-      }));
+      }).await;
     }
 
     if ingest_options.ingest_relation { // relation thread
@@ -245,7 +271,7 @@ impl Ingest {
       let nactive = mnactive.clone();
       let channel_size = ingest_options.channel_size;
       let relation_batch_size = ingest_options.relation_batch_size;
-      work.push(task::spawn(async move {
+      task::spawn(async move {
         let mut batch = vec![];
         let mut element_counter = 0;
         let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
@@ -359,33 +385,7 @@ impl Ingest {
           *n -= 1;
           if *n == 0 { bs.close(); }
         }
-      }));
-    }
-
-    {
-      let progress = self.progress.clone();
-      work.push(task::spawn_local(async move {
-        let mut sync_count = 0;
-        let mut batch = vec![];
-        while let Ok((element_counter,rows)) = batch_receiver.recv().await {
-          batch.extend(rows);
-          if batch.len() >= BATCH_SIZE {
-            db.batch(&batch).await.unwrap();
-            sync_count += batch.len();
-            batch.clear();
-            if sync_count > 500_000 {
-              db.sync().await.unwrap();
-              sync_count = 0;
-            }
-          }
-          progress.write().await.add("ingest", element_counter);
-        }
-        if !batch.is_empty() {
-          db.batch(&batch).await.unwrap();
-        }
-        db.sync().await.unwrap();
-        progress.write().await.add("ingest", 0);
-      }));
+      }).await;
     }
 
     {
