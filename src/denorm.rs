@@ -136,13 +136,19 @@ pub async fn get_ways_bare_ch_from_offset_ch<F: Read+Seek+Send+'static>(
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
-        way_s.send(items.iter()
-          .filter_map(|element| match element {
-            Element::Way(way) => Some((way.id,way.refs.clone())),
-            _ => None,
-          })
-          .collect()
-        ).await.unwrap();
+        let mut iter = items.iter();
+        loop {
+          let sub_items = (&mut iter)
+            .filter_map(|element| match element {
+              Element::Way(way) => Some((way.id,way.refs.clone())),
+              _ => None,
+            })
+            .take(CH_TAKE_LEN)
+            .collect::<Vec<_>>();
+          let len = sub_items.len();
+          way_s.send(sub_items).await.unwrap();
+          if len < CH_TAKE_LEN { break }
+        }
       }
       {
         let mut n = nactive.lock().await;
@@ -209,14 +215,20 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
-        way_s.send(items.iter()
-          .filter_map(|element| match element {
-            Element::Way(way) => Some(way),
-            _ => None,
-          })
-          .cloned()
-          .collect()
-        ).await.unwrap();
+        let mut iter = items.iter();
+        loop {
+          let sub_items = (&mut iter)
+            .filter_map(|element| match element {
+              Element::Way(way) => Some(way),
+              _ => None,
+            })
+            .take(CH_TAKE_LEN)
+            .cloned()
+            .collect::<Vec<_>>();
+          let len = sub_items.len();
+          way_s.send(sub_items).await.unwrap();
+          if len < CH_TAKE_LEN { break }
+        }
       }
       {
         let mut n = nactive.lock().await;
@@ -269,14 +281,20 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
-        relation_s.send(items.iter()
-          .filter_map(|element| match element {
-            Element::Relation(relation) => Some(relation),
-            _ => None,
-          })
-          .cloned()
-          .collect()
-        ).await.unwrap();
+        let mut iter = items.iter();
+        loop {
+          let sub_items = (&mut iter)
+            .filter_map(|element| match element {
+              Element::Relation(relation) => Some(relation),
+              _ => None,
+            })
+            .take(CH_TAKE_LEN)
+            .cloned()
+            .collect::<Vec<_>>();
+          let len = sub_items.len();
+          relation_s.send(sub_items).await.unwrap();
+          if len < CH_TAKE_LEN { break }
+        }
       }
       {
         let mut n = nactive.lock().await;
