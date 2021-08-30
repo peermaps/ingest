@@ -39,7 +39,7 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
   fn default() -> Self {
     Self {
-      channel_size: 1_000,
+      channel_size: 500,
       way_batch_size: 10_000_000,
       relation_batch_size: 1_000_000,
       ingest_node: true,
@@ -83,9 +83,10 @@ impl Ingest {
     self.progress.write().await.start("ingest");
     let mut work = vec![];
     let (batch_sender,batch_receiver) = channel::bounded(100);
-    let mnactive = Arc::new(Mutex::new(4));
+    let mnactive = Arc::new(Mutex::new(1));
 
     if ingest_options.ingest_node { // node thread
+      *mnactive.lock().await += 1;
       let place_other = self.place_other.clone();
       let file = pbf_file.to_string();
       let bs = batch_sender.clone();
@@ -144,6 +145,7 @@ impl Ingest {
     }
 
     if ingest_options.ingest_way { // way thread
+      *mnactive.lock().await += 1;
       let place_other = self.place_other.clone();
       let file = pbf_file.to_string();
       let bs = batch_sender.clone();
@@ -235,6 +237,7 @@ impl Ingest {
     }
 
     if ingest_options.ingest_relation { // relation thread
+      *mnactive.lock().await += 1;
       let place_other = self.place_other.clone();
       let file = pbf_file.to_string();
       let bs = batch_sender.clone();

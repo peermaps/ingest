@@ -3,7 +3,8 @@ use std::collections::{HashMap,HashSet};
 use osmpbf_parser::{Scan,ScanTable,Element,element};
 use std::io::{Read,Seek};
 use async_std::{channel,sync::{Arc,Mutex},task};
-use futures::future::join_all;
+
+const CH_TAKE_LEN: usize = 10_000;
 
 pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
   scans: Vec<Scan<F>>, n: usize
@@ -15,36 +16,40 @@ pub async fn get_nodes_bare_ch<F: Read+Seek+Send+'static>(
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
-  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let node_s = node_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    scan_work.push(task::spawn(async move {
+    task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
-        node_s.send(items.iter()
-          .filter_map(|element| match element {
-            Element::Node(node) => Some((node.id,(node.lon,node.lat))),
-            _ => None,
-          })
-          .collect()
-        ).await.unwrap();
+        let mut iter = items.iter();
+        loop {
+          let sub_items = (&mut iter)
+            .filter_map(|element| match element {
+              Element::Node(node) => Some((node.id,(node.lon,node.lat))),
+              _ => None,
+            })
+            .take(CH_TAKE_LEN)
+            .collect::<Vec<_>>();
+          let len = sub_items.len();
+          node_s.send(sub_items).await.unwrap();
+          if len < CH_TAKE_LEN { break }
+        }
       }
       {
         let mut n = nactive.lock().await;
         *n -= 1;
         if *n == 0 { node_s.close(); }
       }
-    }));
+    });
   }
   {
     let mut n = mnactive.lock().await;
     *n -= 1;
     if *n == 0 { node_sender.close(); }
   }
-  join_all(scan_work).await;
   node_receiver
 }
 
@@ -58,37 +63,41 @@ pub async fn get_nodes_ch<F: Read+Seek+Send+'static>(
     offset_sender.send((offset,byte_len)).await.unwrap();
   }
   offset_sender.close();
-  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let node_s = node_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    scan_work.push(task::spawn(async move {
+    task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
-        node_s.send(items.iter()
-          .filter_map(|element| match element {
-            Element::Node(node) => Some(node),
-            _ => None,
-          })
-          .cloned()
-          .collect()
-        ).await.unwrap();
+        let mut iter = items.iter();
+        loop {
+          let sub_items = (&mut iter)
+            .filter_map(|element| match element {
+              Element::Node(node) => Some(node),
+              _ => None,
+            })
+            .take(CH_TAKE_LEN)
+            .cloned()
+            .collect::<Vec<_>>();
+          let len = sub_items.len();
+          node_s.send(sub_items).await.unwrap();
+          if len < CH_TAKE_LEN { break }
+        }
       }
       {
         let mut n = nactive.lock().await;
         *n -= 1;
         if *n == 0 { node_s.close(); }
       }
-    }));
+    });
   }
   {
     let mut n = mnactive.lock().await;
     *n -= 1;
     if *n == 0 { node_sender.close(); }
   }
-  join_all(scan_work).await;
   node_receiver
 }
 
@@ -119,12 +128,11 @@ pub async fn get_ways_bare_ch_from_offset_ch<F: Read+Seek+Send+'static>(
 ) -> channel::Receiver<Vec<(i64,Vec<i64>)>> {
   let (way_sender,way_receiver) = channel::bounded(n);
   let mnactive = Arc::new(Mutex::new(scans.len()+1));
-  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let way_s = way_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    scan_work.push(task::spawn(async move {
+    task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -141,14 +149,13 @@ pub async fn get_ways_bare_ch_from_offset_ch<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { way_s.close(); }
       }
-    }));
+    });
   }
   {
     let mut n = mnactive.lock().await;
     *n -= 1;
     if *n == 0 { way_sender.close(); }
   }
-  join_all(scan_work).await;
   way_receiver
 }
 
@@ -194,12 +201,11 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
   }
   offset_sender.close();
   assert![next_offset != Some(start), "start offset is the same as next_offset (={})", start];
-  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let way_s = way_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    scan_work.push(task::spawn(async move {
+    task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -217,7 +223,7 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { way_s.close(); }
       }
-    }));
+    });
   }
   {
     let mut n = mnactive.lock().await;
@@ -228,7 +234,6 @@ pub async fn get_ways<F: Read+Seek+Send+'static>(
   while let Ok(way_group) = way_receiver.recv().await {
     ways.extend(way_group);
   }
-  join_all(scan_work).await;
   (next_offset,ways)
 }
 
@@ -256,12 +261,11 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
   }
   offset_sender.close();
   assert![next_offset != Some(start), "start offset is the same as next_offset (={})", start];
-  let mut scan_work = Vec::with_capacity(scans.len());
   for mut scan in scans {
     let relation_s = relation_sender.clone();
     let offset_r = offset_receiver.clone();
     let nactive = mnactive.clone();
-    scan_work.push(task::spawn(async move {
+    task::spawn(async move {
       while let Ok((offset,len)) = offset_r.recv().await {
         let blob = scan.parser.read_blob(offset,len).unwrap();
         let items = blob.decode_primitive().unwrap().decode();
@@ -279,7 +283,7 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
         *n -= 1;
         if *n == 0 { relation_s.close(); }
       }
-    }));
+    });
   }
   {
     let mut n = mnactive.lock().await;
@@ -290,7 +294,6 @@ pub async fn get_relations<F: Read+Seek+Send+'static>(
   while let Ok(relation_group) = relation_receiver.recv().await {
     relations.extend(relation_group);
   }
-  join_all(scan_work).await;
   (next_offset,relations)
 }
 
