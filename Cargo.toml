@@ -17,7 +17,6 @@ path = "src/bin.rs"
 eyros = "4.2.2"
 georender-pack = "2.1.1"
 desert = "2.0.0"
-osmpbf = "0.2.4"
 async-trait = "0.1.48"
 async-std = "1.9.0"
 osm-is-area = "1.0.0"
@@ -29,7 +28,8 @@ async-recursion = "0.3.2"
 argmap = "1.1.0"
 indoc = "1.0.3"
 futures = "0.3.13"
-osmpbf-parser = "1.2.0"
+#osmpbf-parser = "1.2.0"
+osmpbf-parser = { path = "../osmpbf-parser" }
 
 [[bench]]
 name = "large_area"

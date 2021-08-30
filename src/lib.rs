@@ -85,7 +85,7 @@ impl Ingest {
     let (batch_sender,batch_receiver) = channel::bounded(100);
     let mnactive = Arc::new(Mutex::new(4));
 
-    { // node thread
+    if ingest_options.ingest_node { // node thread
       let place_other = self.place_other.clone();
       let file = pbf_file.to_string();
       let bs = batch_sender.clone();
@@ -143,7 +143,7 @@ impl Ingest {
       }));
     }
 
-    { // way thread
+    if ingest_options.ingest_way { // way thread
       let place_other = self.place_other.clone();
       let file = pbf_file.to_string();
       let bs = batch_sender.clone();
@@ -234,7 +234,7 @@ impl Ingest {
       }));
     }
 
-    { // relation thread
+    if ingest_options.ingest_relation { // relation thread
       let place_other = self.place_other.clone();
       let file = pbf_file.to_string();
       let bs = batch_sender.clone();
