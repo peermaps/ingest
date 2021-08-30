@@ -13,7 +13,6 @@ use par_scan::parallel_scan;
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
-use std::collections::HashMap;
 use async_std::{sync::{Arc,Mutex,RwLock},task,channel};
 use futures::future::join_all;
 
@@ -186,7 +185,7 @@ impl Ingest {
                 .collect::<Vec<(&str,&str)>>();
               let (ft,labels) = georender_pack::tags::parse(&tags).unwrap();
               if ft == place_other { continue }
-              let mut pdeps = HashMap::new();
+              let mut pdeps = std::collections::HashMap::new();
               for r in way.refs.iter() {
                 if let Some((lon,lat)) = all_node_deps.get(r) {
                   pdeps.insert(*r as u64, (*lon as f32, *lat as f32));
@@ -306,8 +305,8 @@ impl Ingest {
                 .collect::<Vec<_>>();
               if members.is_empty() { continue }
 
-              let mut node_deps = HashMap::new();
-              let mut way_deps = HashMap::new();
+              let mut node_deps = std::collections::HashMap::new();
+              let mut way_deps = std::collections::HashMap::new();
               for m in members.iter() {
                 if let Some(refs) = all_way_deps.get(&(m.id as i64)) {
                   way_deps.insert(m.id as u64, refs.iter()

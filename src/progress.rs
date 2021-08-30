@@ -1,5 +1,6 @@
 use crate::Error;
-use std::collections::{HashMap,VecDeque};
+use hashbrown::HashMap;
+use std::collections::VecDeque;
 
 pub struct Progress {
   pub stages: Vec<String>,

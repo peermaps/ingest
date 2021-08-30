@@ -1,5 +1,6 @@
 use crate::error::Error;
-use std::collections::{HashMap,HashSet};
+use hashbrown::HashMap;
+use std::collections::HashSet;
 use osmpbf_parser::{Scan,ScanTable,Element,element};
 use std::io::{Read,Seek};
 use async_std::{channel,sync::{Arc,Mutex},task};
