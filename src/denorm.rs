@@ -416,6 +416,7 @@ pub async fn denormalize_relations<F: Read+Seek+Send+'static>(
 
   while let Ok(ways) = way_receiver.recv().await {
     for (way_id,refs) in ways {
+      if !relation_ref_table.contains_key(&way_id) { continue }
       for r in refs.iter() {
         if let Some(way_ids) = way_ref_table.get_mut(&r) {
           way_ids.push(way_id);
@@ -423,9 +424,7 @@ pub async fn denormalize_relations<F: Read+Seek+Send+'static>(
           way_ref_table.insert(*r, vec![way_id]);
         }
       }
-      if relation_ref_table.contains_key(&way_id) {
-        way_deps.insert(way_id,refs);
-      }
+      way_deps.insert(way_id,refs);
     }
   }
   let node_receiver = {
