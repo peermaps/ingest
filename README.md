@@ -13,33 +13,34 @@ features that can be rendered into an [eyros][] database with payloads in the
 # command-line usage
 
 ```
-usage: peermaps-ingest COMMAND {OPTIONS}
+usage: target/release/peermaps-ingest COMMAND {OPTIONS}
 
-ingest - runs pbf and process phases
+ingest - scans and processes a pbf
   -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
-  -l, --ldb     level db dir to write normalized data
   -e, --edb     eyros db dir to write spatial data
-  -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
+  -o, --outdir  write eyros db in this dir in edb/
 
-pbf - parse pbf and write normalized data to level db
+  --no-ingest-node      skip over processing nodes
+  --no-ingest-way       skip over processing nodes
+  --no-ingest-relation  skip over processing nodes
+
+scan - scans a pbf, outputting a scan file
   -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
-  -l, --ldb     level db dir to write normalized data
-  -e, --edb     eyros db dir to write spatial data
-  -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
+  -o, --outdir  write a scan file in this dir
+  --scan_file   write scan file with explicit path
 
-process - write georender-pack data to eyros db from populated level db
-  -l, --ldb     level db dir to write normalized data
+ingest-from-scan - process a pbf from an existing scan
+  -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
   -e, --edb     eyros db dir to write spatial data
-  -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
+  -o, --outdir  write eyros db in this dir in edb/ and read scan file
+  --scan_file   read scan file with explicit path
 
-changeset - ingest data from an o5c changeset
-  -f, --o5c     o5c changeset file or "-" for stdin (default)
-  -l, --ldb     level db dir to write normalized data
-  -e, --edb     eyros db dir to write spatial data
-  -o, --outdir  write level and eyros db in this dir in ldb/ and edb/
+  --no-ingest-node      skip over processing nodes
+  --no-ingest-way       skip over processing nodes
+  --no-ingest-relation  skip over processing nodes
 
 -h, --help     Print this help message
--v, --version  Print the version string
+-v, --version  Print the version string (2.0.0)
 ```
 
 # install
