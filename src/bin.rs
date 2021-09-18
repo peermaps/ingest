@@ -27,7 +27,13 @@ async fn main() -> Result<(),Error> {
 
 async fn run() -> Result<(),Error> {
   let (args,argv) = argmap::new()
-    .booleans(&["help","h","defaults","d","no-monitor"])
+    .booleans(&[
+      "help","h","defaults","d","no-monitor",
+      "no-ingest-node","no-ingest-nodes","no_ingest_node","no_ingest_nodes",
+      "no-ingest-way","no-ingest-ways","no_ingest_way","no_ingest_ways",
+      "no-ingest-relation","no-ingest-relations","no_ingest_relation","no_ingest_relations",
+      "debug",
+    ])
     .parse(std::env::args());
   if argv.contains_key("help") || argv.contains_key("h") {
     print!["{}", usage(&args)];
@@ -35,6 +41,10 @@ async fn run() -> Result<(),Error> {
   }
   if argv.contains_key("version") || argv.contains_key("v") {
     println!["{}", get_version()];
+    return Ok(());
+  }
+  if argv.contains_key("defaults") {
+    print!["{}", get_defaults()];
     return Ok(());
   }
 
@@ -117,14 +127,14 @@ async fn run() -> Result<(),Error> {
       let mut ingest = Ingest::new(&["ingest"]);
       if argv.contains_key("no-monitor") {
         ingest.ingest(
-          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
           &pbf_file, scan_table,
           &ingest_options
         ).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
         ingest.ingest(
-          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
           &pbf_file, scan_table, &ingest_options
         ).await;
         p.end().await;
@@ -149,14 +159,14 @@ async fn run() -> Result<(),Error> {
       if argv.contains_key("no-monitor") {
         let scan_table = ingest.scan(&pbf_file).await;
         ingest.ingest(
-          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
           &pbf_file, scan_table, &ingest_options
         ).await;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
         let scan_table = ingest.scan(&pbf_file).await;
         ingest.ingest(
-          open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+          open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
           &pbf_file, scan_table, &ingest_options
         ).await;
         p.end().await;
@@ -173,9 +183,41 @@ async fn run() -> Result<(),Error> {
   Ok(())
 }
 
-async fn open_eyros(file: &std::path::Path) -> Result<EDB,Error> {
-  eyros::Setup::from_path(&std::path::Path::new(&file))
-    .build().await
+async fn open_eyros(file: &std::path::Path, argv: &argmap::Map) -> Result<EDB,Error> {
+  let mut setup = eyros::Setup::from_path(&std::path::Path::new(&file));
+  argv.get("branch_factor")
+    .or_else(|| argv.get("branch-factor"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --branch_factor"))
+    .map(|x| { setup.fields.branch_factor = x; });
+  argv.get("max_depth")
+    .or_else(|| argv.get("max-depth"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --max_depth"))
+    .map(|x| { setup.fields.max_depth = x; });
+  argv.get("max_records")
+    .or_else(|| argv.get("max-records"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --max_records"))
+    .map(|x| { setup.fields.max_records = x; });
+  argv.get("inline")
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --inline"))
+    .map(|x| { setup.fields.inline = x; });
+  argv.get("tree_cache_size")
+    .or_else(|| argv.get("tree-cache-size"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --tree_cache_size"))
+    .map(|x| { setup.fields.tree_cache_size = x; });
+  argv.get("rebuild_depth")
+    .or_else(|| argv.get("rebuild-depth"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --rebuild_depth"))
+    .map(|x| { setup.fields.rebuild_depth = x; });
+  if argv.contains_key("debug") {
+    setup = setup.debug(|msg: &str| eprintln!["[debug] {}", msg])
+  }
+  setup.build().await
 }
 
 fn usage(args: &[String]) -> String {
@@ -185,6 +227,10 @@ fn usage(args: &[String]) -> String {
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
       -e, --edb     eyros db dir to write spatial data
       -o, --outdir  write eyros db in this dir in edb/
+
+      --no-ingest-node      skip over processing nodes
+      --no-ingest-way       skip over processing nodes
+      --no-ingest-relation  skip over processing nodes
 
     scan - scans a pbf, outputting a scan file
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
@@ -197,6 +243,10 @@ fn usage(args: &[String]) -> String {
       -o, --outdir  write eyros db in this dir in edb/ and read scan file
       --scan_file   read scan file with explicit path
 
+      --no-ingest-node      skip over processing nodes
+      --no-ingest-way       skip over processing nodes
+      --no-ingest-relation  skip over processing nodes
+
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
 
@@ -206,6 +256,35 @@ fn usage(args: &[String]) -> String {
 fn get_version() -> &'static str {
   const VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
   VERSION.unwrap_or("unknown")
+}
+
+fn get_defaults() -> String {
+  let efields = eyros::SetupFields::default();
+  let ifields = IngestOptions::default();
+  format![
+    indoc::indoc![r#"
+      --channel_size={}
+      --way_batch_size={}
+      --relation_batch_size={}
+      --branch_factor={}
+      --max_depth={}
+      --max_records={}
+      --inline={}
+      --tree_cache_size={}
+      --rebuild_depth={}
+      --debug={}
+    "#],
+    ifields.channel_size,
+    ifields.way_batch_size,
+    ifields.relation_batch_size,
+    efields.branch_factor,
+    efields.max_depth,
+    efields.max_records,
+    efields.inline,
+    efields.tree_cache_size,
+    efields.rebuild_depth,
+    efields.debug.is_none(),
+  ]
 }
 
 fn get_dirs(argv: &argmap::Map) -> Option<String> {
