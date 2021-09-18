@@ -1,34 +1,32 @@
-use peermaps_ingest::{Ingest,EStore,LStore};
-use rocksdb::{Options,DBWithThreadMode,MultiThreaded};
-use async_std::{prelude::*,fs::File};
+use peermaps_ingest::{Ingest,IngestOptions,EDB};
+use async_std::prelude::*;
 use tempfile::Builder as Tmpfile;
 use eyros::{Coord as C};
 use georender_pack::{Feature,Point,Line,Area};
 use pretty_assertions::assert_eq;
 
-type DB = DBWithThreadMode<MultiThreaded>;
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
 #[async_std::test]
 async fn ingest() -> Result<(),Error> {
   let dir = Tmpfile::new().prefix("peermaps-ingest").tempdir()?;
-  let mut ldb_dir = std::path::PathBuf::from(&dir.path());
-  ldb_dir.push("ldb");
   let mut edb_dir = std::path::PathBuf::from(&dir.path());
   edb_dir.push("edb");
+  let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  p.push("tests/data/0/ingest.pbf");
+  let pbf_file = p.to_str().unwrap();
 
-  let mut pbf_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  pbf_file.push("tests/data/0/ingest.pbf");
+  let mut ingest = Ingest::new(&["scan","ingest"]);
+  let scan_table = ingest.scan(&pbf_file).await;
+  let ingest_options = IngestOptions::default();
 
-  let mut ingest = Ingest::new(
-    LStore::new(open(std::path::Path::new(&ldb_dir))?),
-    EStore::new(eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?)
-  );
-  ingest.load_pbf(std::fs::File::open(&pbf_file)?).await?;
-  ingest.process().await;
+  ingest.ingest(
+    eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?,
+    &pbf_file, scan_table, &ingest_options
+  ).await;
   {
-    let mut estore = ingest.estore.lock().await;
-    let mut stream = estore.db.query(&((3.0,-15.0),(15.0,45.0))).await?;
+    let mut db: EDB = eyros::open_from_path2(&std::path::Path::new(&edb_dir)).await?;
+    let mut stream = db.query(&((3.0,-15.0),(15.0,45.0))).await?;
     let mut results = vec![];
     while let Some(result) = stream.next().await {
       let (pt,v) = result?;
@@ -89,6 +87,7 @@ async fn ingest() -> Result<(),Error> {
     ];
   }
 
+  /*
   {
     let mut o5c_file = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     o5c_file.push("tests/data/0/changeset0.o5c");
@@ -398,15 +397,9 @@ async fn ingest() -> Result<(),Error> {
       ]
     ];
   }
+  */
 
   Ok(())
-}
-
-fn open(path: &std::path::Path) -> Result<DB,Error> {
-  let mut options = Options::default();
-  options.create_if_missing(true);
-  options.set_compression_type(rocksdb::DBCompressionType::Snappy);
-  DB::open(&options, path).map_err(|e| e.into())
 }
 
 fn get_type(key: &str) -> u64 {
