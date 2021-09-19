@@ -266,6 +266,7 @@ fn get_defaults() -> String {
       --channel_size={}
       --way_batch_size={}
       --relation_batch_size={}
+      --optimize={}
       --branch_factor={}
       --max_depth={}
       --max_records={}
@@ -277,13 +278,14 @@ fn get_defaults() -> String {
     ifields.channel_size,
     ifields.way_batch_size,
     ifields.relation_batch_size,
+    ifields.optimize,
     efields.branch_factor,
     efields.max_depth,
     efields.max_records,
     efields.inline,
     efields.tree_cache_size,
     efields.rebuild_depth,
-    efields.debug.is_none(),
+    efields.debug.is_some(),
   ]
 }
 
@@ -368,6 +370,10 @@ fn get_ingest_options(argv: &argmap::Map) -> IngestOptions {
   if let Some(relation_batch_size) = o_relation_batch_size {
     ingest_options.relation_batch_size = relation_batch_size;
   }
+  argv.get("optimize")
+    .and_then(|x| x.first())
+    .map(|x| x.parse().expect("invalid number for --optimize"))
+    .map(|x| { ingest_options.optimize = x; });
   let o_ingest_node = argv.get("no_ingest_node")
     .or_else(|| argv.get("no_ingest_nodes"))
     .or_else(|| argv.get("no-ingest-node"))
