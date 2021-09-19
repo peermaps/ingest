@@ -13,6 +13,37 @@ features that can be rendered into an [eyros][] database with payloads in the
 # command-line usage
 
 ```
+usage: target/release/peermaps-ingest COMMAND {OPTIONS}
+
+ingest - scans and processes a pbf
+  -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+  -e, --edb     eyros db dir to write spatial data
+  -o, --outdir  write eyros db in this dir in edb/
+
+  --no-ingest-node      skip over processing nodes
+  --no-ingest-way       skip over processing ways
+  --no-ingest-relation  skip over processing relations
+  --defaults            Print default values for ingest parameters.
+
+scan - scans a pbf, outputting a scan file
+  -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+  -o, --outdir  write a scan file in this dir
+  --scan_file   write scan file with explicit path
+
+ingest-from-scan - process a pbf from an existing scan
+  -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
+  -e, --edb     eyros db dir to write spatial data
+  -o, --outdir  write eyros db in this dir in edb/ and read scan file
+  --scan_file   read scan file with explicit path
+
+  --no-ingest-node      skip over processing nodes
+  --no-ingest-way       skip over processing ways
+  --no-ingest-relation  skip over processing relations
+  --defaults            Print default values for ingest parameters.
+
+-h, --help     Print this help message
+-v, --version  Print the version string (2.0.0)
+
 ```
 
 # install
