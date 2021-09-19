@@ -33,6 +33,7 @@ pub struct IngestOptions {
   pub ingest_node: bool,
   pub ingest_way: bool,
   pub ingest_relation: bool,
+  pub optimize: usize,
 }
 
 impl Default for IngestOptions {
@@ -44,6 +45,7 @@ impl Default for IngestOptions {
       ingest_node: true,
       ingest_way: true,
       ingest_relation: true,
+      optimize: 0,
     }
   }
 }
@@ -86,6 +88,7 @@ impl Ingest {
 
     {
       let progress = self.progress.clone();
+      let optimize = ingest_options.optimize;
       work.push(task::spawn_local(async move {
         let mut sync_count = 0;
         let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
@@ -106,6 +109,9 @@ impl Ingest {
           db.batch(&batch).await.unwrap();
         }
         db.sync().await.unwrap();
+        if optimize > 0 {
+          db.optimize(optimize).await.unwrap();
+        }
         progress.write().await.add("ingest", 0);
       }));
     }
