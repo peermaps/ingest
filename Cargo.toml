@@ -14,8 +14,7 @@ name = "peermaps-ingest"
 path = "src/bin.rs"
 
 [dependencies]
-#eyros = "4.2.2"
-eyros = { path = "../eyros" }
+eyros = "4.2.3"
 georender-pack = "2.1.1"
 desert = "2.0.0"
 async-std = "1.9.0"
