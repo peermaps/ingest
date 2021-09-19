@@ -231,6 +231,7 @@ fn usage(args: &[String]) -> String {
       --no-ingest-node      skip over processing nodes
       --no-ingest-way       skip over processing ways
       --no-ingest-relation  skip over processing relations
+      --defaults            Print default values for ingest parameters.
 
     scan - scans a pbf, outputting a scan file
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
@@ -246,6 +247,7 @@ fn usage(args: &[String]) -> String {
       --no-ingest-node      skip over processing nodes
       --no-ingest-way       skip over processing ways
       --no-ingest-relation  skip over processing relations
+      --defaults            Print default values for ingest parameters.
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
