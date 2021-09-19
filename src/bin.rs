@@ -229,8 +229,8 @@ fn usage(args: &[String]) -> String {
       -o, --outdir  write eyros db in this dir in edb/
 
       --no-ingest-node      skip over processing nodes
-      --no-ingest-way       skip over processing nodes
-      --no-ingest-relation  skip over processing nodes
+      --no-ingest-way       skip over processing ways
+      --no-ingest-relation  skip over processing relations
 
     scan - scans a pbf, outputting a scan file
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
@@ -244,8 +244,8 @@ fn usage(args: &[String]) -> String {
       --scan_file   read scan file with explicit path
 
       --no-ingest-node      skip over processing nodes
-      --no-ingest-way       skip over processing nodes
-      --no-ingest-relation  skip over processing nodes
+      --no-ingest-way       skip over processing ways
+      --no-ingest-relation  skip over processing relations
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
