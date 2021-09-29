@@ -88,7 +88,6 @@ impl Ingest {
 
     {
       let progress = self.progress.clone();
-      let optimize = ingest_options.optimize;
       work.push(task::spawn_local(async move {
         let mut sync_count = 0;
         let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
@@ -109,9 +108,6 @@ impl Ingest {
           db.batch(&batch).await.unwrap();
         }
         db.sync().await.unwrap();
-        if optimize > 0 {
-          db.optimize(optimize).await.unwrap();
-        }
         progress.write().await.add("ingest", 0);
       }));
     }
@@ -401,5 +397,15 @@ impl Ingest {
     }
     join_all(work).await;
     self.progress.write().await.end("ingest");
+  }
+
+  pub async fn optimize(&mut self, mut db: EDB, rebuild_depth: usize) -> Result<(),Error> {
+    self.progress.write().await.start("optimize");
+    if rebuild_depth > 0 {
+      db.optimize(rebuild_depth).await?;
+      db.sync().await?;
+    }
+    self.progress.write().await.end("optimize");
+    Ok(())
   }
 }

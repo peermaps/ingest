@@ -150,25 +150,56 @@ async fn run() -> Result<(),Error> {
       }
       let pbf_file = o_pbf_file.unwrap();
       let ingest_options = get_ingest_options(&argv);
+      let o_edb_dir = get_dirs(&argv);
+      if o_edb_dir.is_none() {
+        print!["{}", usage(&args)];
+        std::process::exit(1);
+      }
+      let edb_dir = o_edb_dir.unwrap();
+      let mut ingest = Ingest::new(&["scan","ingest","optimize"]);
+      if argv.contains_key("no-monitor") {
+        let scan_table = ingest.scan(&pbf_file).await;
+        ingest.ingest(
+          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
+          &pbf_file, scan_table, &ingest_options
+        ).await;
+        ingest.optimize(
+          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
+          ingest_options.optimize
+        ).await?;
+      } else {
+        let mut p = Monitor::open(ingest.progress.clone());
+        let scan_table = ingest.scan(&pbf_file).await;
+        ingest.ingest(
+          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
+          &pbf_file, scan_table, &ingest_options
+        ).await;
+        ingest.optimize(
+          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
+          ingest_options.optimize
+        ).await?;
+        p.end().await;
+      }
+    },
+    Some("optimize") => {
+      let ingest_options = get_ingest_options(&argv);
       let edb_dir = get_dirs(&argv);
       if edb_dir.is_none() {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
-      let mut ingest = Ingest::new(&["scan","ingest"]);
+      let mut ingest = Ingest::new(&["optimize"]);
       if argv.contains_key("no-monitor") {
-        let scan_table = ingest.scan(&pbf_file).await;
-        ingest.ingest(
+        ingest.optimize(
           open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
-          &pbf_file, scan_table, &ingest_options
-        ).await;
+          ingest_options.optimize
+        ).await?;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
-        let scan_table = ingest.scan(&pbf_file).await;
-        ingest.ingest(
+        ingest.optimize(
           open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
-          &pbf_file, scan_table, &ingest_options
-        ).await;
+          ingest_options.optimize
+        ).await?;
         p.end().await;
       }
     },
@@ -200,10 +231,20 @@ async fn open_eyros(file: &std::path::Path, argv: &argmap::Map) -> Result<EDB,Er
     .and_then(|x| x.first())
     .map(|x| x.replace("_","").parse().expect("invalid number for --max_records"))
     .map(|x| { setup.fields.max_records = x; });
+  argv.get("ext_records")
+    .or_else(|| argv.get("ext-records"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --ext_records"))
+    .map(|x| { setup.fields.ext_records = x; });
   argv.get("inline")
     .and_then(|x| x.first())
     .map(|x| x.replace("_","").parse().expect("invalid number for --inline"))
     .map(|x| { setup.fields.inline = x; });
+  argv.get("inline_max_bytes")
+    .or_else(|| argv.get("inline-max-bytes"))
+    .and_then(|x| x.first())
+    .map(|x| x.replace("_","").parse().expect("invalid number for --inline_max_bytes"))
+    .map(|x| { setup.fields.inline_max_bytes = x; });
   argv.get("tree_cache_size")
     .or_else(|| argv.get("tree-cache-size"))
     .and_then(|x| x.first())
@@ -233,6 +274,8 @@ fn usage(args: &[String]) -> String {
       --no-ingest-relation  skip over processing relations
       --defaults            Print default values for ingest parameters.
 
+      This step will optimize when --optimize is > 0.
+
     scan - scans a pbf, outputting a scan file
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
       -o, --outdir  write a scan file in this dir
@@ -248,6 +291,12 @@ fn usage(args: &[String]) -> String {
       --no-ingest-way       skip over processing ways
       --no-ingest-relation  skip over processing relations
       --defaults            Print default values for ingest parameters.
+
+    optimize - recursively rebuild tree sections to improve  query performance
+      --optimize    number of tree-file levels to process at a time.
+                    when 0 (default), this step does nothing.
+      -e, --edb     eyros db dir to write spatial data
+      -o, --outdir  write eyros db in this dir in edb/ and read scan file
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
@@ -272,7 +321,9 @@ fn get_defaults() -> String {
       --branch_factor={}
       --max_depth={}
       --max_records={}
+      --ext_records={}
       --inline={}
+      --inline_max_bytes={}
       --tree_cache_size={}
       --rebuild_depth={}
       --debug={}
@@ -284,7 +335,9 @@ fn get_defaults() -> String {
     efields.branch_factor,
     efields.max_depth,
     efields.max_records,
+    efields.ext_records,
     efields.inline,
+    efields.inline_max_bytes,
     efields.tree_cache_size,
     efields.rebuild_depth,
     efields.debug.is_some(),
