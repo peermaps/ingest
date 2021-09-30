@@ -10,7 +10,7 @@ use osmpbf_parser::{Parser,Scan,ScanTable,element};
 mod par_scan;
 use par_scan::parallel_scan;
 use eyros::{Point,Value};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use async_std::prelude::*;
 
 pub const BACKREF_PREFIX: u8 = 1;
@@ -420,9 +420,10 @@ impl Ingest {
       (db_bounds.1).0 - (db_bounds.0).0,
       (db_bounds.1).1 - (db_bounds.0).1,
     );
-    let mut skip: HashSet<u64> = HashSet::new();
+    let mut skip = HashMap::new();
     let mut batch = vec![];
     let mut sync_count = 0;
+    let mut n_fail = 0;
     for iy in 0..y_divs {
       for ix in 0..x_divs {
         let bbox = (
@@ -441,7 +442,18 @@ impl Ingest {
           let (p,v) = r?;
           if v.is_empty() { continue }
           let id = v.get_id();
-          if skip.contains(&id) { continue }
+          if skip.contains_key(&id) {
+            let n = {
+              let n = skip.get_mut(&id).unwrap();
+              if *n == 0 {
+                n_fail += 1;
+              }
+              *n -= 1;
+              *n
+            };
+            if n <= 0 { skip.remove(&id); }
+            continue;
+          }
           count += 1;
           sync_count += 1;
           let pbounds = (
@@ -466,13 +478,24 @@ impl Ingest {
               },
             ),
           );
-          if (pbounds.0).0 <= (bbox.0).0 || (pbounds.1).0 >= (bbox.1).0
-          || (pbounds.0).1 <= (bbox.0).1 || (pbounds.1).1 >= (bbox.1).1 {
-            skip.insert(id);
+          {
+            let mut nx = 1;
+            let mut ny = 1;
+            if (pbounds.0).0 <= (bbox.0).0 || (pbounds.1).0 >= (bbox.1).0 {
+              nx += (((pbounds.1).0 - (pbounds.0).0) / ((bbox.1).0 - (bbox.0).0)).ceil() as usize;
+            }
+            if (pbounds.0).1 <= (bbox.0).1 || (pbounds.1).1 >= (bbox.1).1 {
+              ny += (((pbounds.1).1 - (pbounds.0).1) / ((bbox.1).1 - (bbox.0).1)).ceil() as usize;
+            }
+            let n = nx*ny-1;
+            if n > 0 {
+              //println!["{}*{}-1={}", nx, ny, n];
+              skip.insert(id, n);
+            }
           }
           batch.push(eyros::Row::Insert(p,v));
         }
-        println!["bbox={:?} [{}]", &bbox, count];
+        println!["bbox={:?} [{}] {},{}", &bbox, count, skip.len(), n_fail];
         if !batch.is_empty() {
           out_db.batch(&batch).await?;
           batch.clear();
