@@ -9,7 +9,9 @@ pub use progress::Progress;
 use osmpbf_parser::{Parser,Scan,ScanTable,element};
 mod par_scan;
 use par_scan::parallel_scan;
-use eyros::Point;
+use eyros::{Point,Value};
+use std::collections::HashSet;
+use async_std::prelude::*;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
@@ -406,7 +408,7 @@ impl Ingest {
     self.progress.write().await.start("optimize");
     let (x_divs,y_divs) = xy_divs;
     let ibox = ((f32::INFINITY,f32::INFINITY),(f32::NEG_INFINITY,f32::NEG_INFINITY));
-    let bounds = in_db.meta.roots.iter()
+    let db_bounds = in_db.meta.roots.iter()
       .filter_map(|r| r.as_ref().map(|tr| tr.bounds.to_bounds().unwrap()))
       .fold(ibox,|bbox,b| {
         (
@@ -414,11 +416,76 @@ impl Ingest {
           ((bbox.1).0.max((b.1).0),(bbox.1).1.max((b.1).1)),
         )
       });
+    let db_span = (
+      (db_bounds.1).0 - (db_bounds.0).0,
+      (db_bounds.1).1 - (db_bounds.0).1,
+    );
+    let mut skip: HashSet<u64> = HashSet::new();
+    let mut batch = vec![];
+    let mut sync_count = 0;
     for iy in 0..y_divs {
       for ix in 0..x_divs {
+        let bbox = (
+          (
+            (ix as f32)/(x_divs as f32) * db_span.0 + (db_bounds.0).0,
+            (iy as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
+          ),
+          (
+            ((ix+1) as f32)/(x_divs as f32) * db_span.0 + (db_bounds.0).0,
+            ((iy+1) as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
+          )
+        );
+        let mut stream = in_db.query(&bbox).await?;
+        let mut count = 0;
+        while let Some(r) = stream.next().await {
+          let (p,v) = r?;
+          if v.is_empty() { continue }
+          let id = v.get_id();
+          if skip.contains(&id) { continue }
+          count += 1;
+          sync_count += 1;
+          let pbounds = (
+            (
+              *match &p.0 {
+                eyros::Coord::Scalar(x) => x,
+                eyros::Coord::Interval(xmin,_) => xmin,
+              },
+              *match &p.1 {
+                eyros::Coord::Scalar(y) => y,
+                eyros::Coord::Interval(ymin,_) => ymin,
+              },
+            ),
+            (
+              *match &p.0 {
+                eyros::Coord::Scalar(x) => x,
+                eyros::Coord::Interval(_,xmax) => xmax,
+              },
+              *match &p.1 {
+                eyros::Coord::Scalar(y) => y,
+                eyros::Coord::Interval(_,ymax) => ymax,
+              },
+            ),
+          );
+          if (pbounds.0).0 <= (bbox.0).0 || (pbounds.1).0 >= (bbox.1).0
+          || (pbounds.0).1 <= (bbox.0).1 || (pbounds.1).1 >= (bbox.1).1 {
+            skip.insert(id);
+          }
+          batch.push(eyros::Row::Insert(p,v));
+        }
+        println!["bbox={:?} [{}]", &bbox, count];
+        if !batch.is_empty() {
+          out_db.batch(&batch).await?;
+          batch.clear();
+        }
+        if sync_count > 1_000_000 {
+          out_db.sync().await?;
+          sync_count = 0;
+        }
       }
     }
-    println!["bounds={:?}", &bounds];
+    if sync_count > 0 {
+      out_db.sync().await?;
+    }
     self.progress.write().await.end("optimize");
     Ok(())
   }

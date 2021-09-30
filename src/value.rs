@@ -5,6 +5,14 @@ use crate::Error;
 pub struct V {
   pub data: Vec<u8>,
 }
+impl V {
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+  pub fn len(&self) -> usize {
+    self.data.len()
+  }
+}
 impl Into<V> for Vec<u8> {
   fn into(self) -> V {
     V { data: self }
@@ -18,8 +26,14 @@ impl Into<Vec<u8>> for V {
 impl eyros::Value for V {
   type Id = u64;
   fn get_id(&self) -> Self::Id {
-    let offset = 1 + varint::decode(&self.data[1..]).unwrap().0;
-    varint::decode(&self.data[offset..]).unwrap().1
+    let mut offset = 0;
+    let (s,_len) = varint::decode(&self.data[offset..]).unwrap();
+    offset += s;
+    offset += 1; // feature_type
+    let (s,_type) = varint::decode(&self.data[offset..]).unwrap();
+    offset += s;
+    let (_s,id) = varint::decode(&self.data[offset..]).unwrap();
+    id
   }
 }
 impl ToBytes for V {
