@@ -9,6 +9,7 @@ pub use progress::Progress;
 use osmpbf_parser::{Parser,Scan,ScanTable,element};
 mod par_scan;
 use par_scan::parallel_scan;
+use eyros::Point;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
@@ -33,7 +34,7 @@ pub struct IngestOptions {
   pub ingest_node: bool,
   pub ingest_way: bool,
   pub ingest_relation: bool,
-  pub optimize: usize,
+  pub optimize: Option<(usize,usize)>,
 }
 
 impl Default for IngestOptions {
@@ -45,7 +46,7 @@ impl Default for IngestOptions {
       ingest_node: true,
       ingest_way: true,
       ingest_relation: true,
-      optimize: 0,
+      optimize: None,
     }
   }
 }
@@ -399,12 +400,25 @@ impl Ingest {
     self.progress.write().await.end("ingest");
   }
 
-  pub async fn optimize(&mut self, mut db: EDB, rebuild_depth: usize) -> Result<(),Error> {
+  pub async fn optimize(
+    &mut self, mut in_db: EDB, mut out_db: EDB, xy_divs: (usize,usize)
+  ) -> Result<(),Error> {
     self.progress.write().await.start("optimize");
-    if rebuild_depth > 0 {
-      db.optimize(rebuild_depth).await?;
-      db.sync().await?;
+    let (x_divs,y_divs) = xy_divs;
+    let ibox = ((f32::INFINITY,f32::INFINITY),(f32::NEG_INFINITY,f32::NEG_INFINITY));
+    let bounds = in_db.meta.roots.iter()
+      .filter_map(|r| r.as_ref().map(|tr| tr.bounds.to_bounds().unwrap()))
+      .fold(ibox,|bbox,b| {
+        (
+          ((bbox.0).0.min((b.0).0),(bbox.0).1.min((b.0).1)),
+          ((bbox.1).0.max((b.1).0),(bbox.1).1.max((b.1).1)),
+        )
+      });
+    for iy in 0..y_divs {
+      for ix in 0..x_divs {
+      }
     }
+    println!["bounds={:?}", &bounds];
     self.progress.write().await.end("optimize");
     Ok(())
   }

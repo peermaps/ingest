@@ -4,7 +4,7 @@
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use peermaps_ingest::{Ingest,IngestOptions,EDB,Progress};
-use async_std::{prelude::*,sync::{Arc,RwLock},task,stream};
+use async_std::{prelude::*,fs,sync::{Arc,RwLock},task,stream};
 use std::io::{Write,Read};
 use desert::{ToBytes,FromBytes};
 
@@ -157,49 +157,72 @@ async fn run() -> Result<(),Error> {
       }
       let edb_dir = o_edb_dir.unwrap();
       let mut ingest = Ingest::new(&["scan","ingest","optimize"]);
+      let in_edb_dir = std::path::Path::new(&edb_dir);
+      let out_edb_dir_s = edb_dir.clone() + "_";
+      let out_edb_dir = std::path::Path::new(&out_edb_dir_s);
       if argv.contains_key("no-monitor") {
         let scan_table = ingest.scan(&pbf_file).await;
         ingest.ingest(
-          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
+          open_eyros(&in_edb_dir, &argv).await?,
           &pbf_file, scan_table, &ingest_options
         ).await;
-        ingest.optimize(
-          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
-          ingest_options.optimize
-        ).await?;
+        if let Some(optimize) = ingest_options.optimize {
+          ingest.optimize(
+            open_eyros(&in_edb_dir, &argv).await?,
+            open_eyros(&out_edb_dir, &argv).await?,
+            optimize,
+          ).await?;
+          fs::remove_dir_all(in_edb_dir).await?;
+          fs::rename(out_edb_dir, in_edb_dir).await?;
+        }
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
         let scan_table = ingest.scan(&pbf_file).await;
         ingest.ingest(
-          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
+          open_eyros(&in_edb_dir, &argv).await?,
           &pbf_file, scan_table, &ingest_options
         ).await;
-        ingest.optimize(
-          open_eyros(&std::path::Path::new(&edb_dir), &argv).await?,
-          ingest_options.optimize
-        ).await?;
+        if let Some(optimize) = ingest_options.optimize {
+          ingest.optimize(
+            open_eyros(&in_edb_dir, &argv).await?,
+            open_eyros(&out_edb_dir, &argv).await?,
+            optimize,
+          ).await?;
+          fs::remove_dir_all(in_edb_dir).await?;
+          fs::rename(out_edb_dir, in_edb_dir).await?;
+        }
         p.end().await;
       }
     },
     Some("optimize") => {
       let ingest_options = get_ingest_options(&argv);
-      let edb_dir = get_dirs(&argv);
-      if edb_dir.is_none() {
+      let o_edb_dir = get_dirs(&argv);
+      if o_edb_dir.is_none() {
         print!["{}", usage(&args)];
         std::process::exit(1);
       }
+      let edb_dir = o_edb_dir.unwrap();
       let mut ingest = Ingest::new(&["optimize"]);
+      let in_edb_dir = std::path::Path::new(&edb_dir);
+      let out_edb_dir_s = edb_dir.clone() + "_";
+      let out_edb_dir = std::path::Path::new(&out_edb_dir_s);
       if argv.contains_key("no-monitor") {
         ingest.optimize(
-          open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
-          ingest_options.optimize
+          open_eyros(&in_edb_dir, &argv).await?,
+          open_eyros(&out_edb_dir, &argv).await?,
+          ingest_options.optimize.expect("--optimize=LON_DIVS,LAT_DIVS not provided"),
         ).await?;
+        fs::remove_dir_all(in_edb_dir).await?;
+        fs::rename(out_edb_dir, in_edb_dir).await?;
       } else {
         let mut p = Monitor::open(ingest.progress.clone());
         ingest.optimize(
-          open_eyros(&std::path::Path::new(&edb_dir.unwrap()), &argv).await?,
-          ingest_options.optimize
+          open_eyros(&in_edb_dir, &argv).await?,
+          open_eyros(&out_edb_dir, &argv).await?,
+          ingest_options.optimize.expect("--optimize=LON_DIVS,LAT_DIVS not provided"),
         ).await?;
+        fs::remove_dir_all(in_edb_dir).await?;
+        fs::rename(out_edb_dir, in_edb_dir).await?;
         p.end().await;
       }
     },
@@ -274,7 +297,7 @@ fn usage(args: &[String]) -> String {
       --no-ingest-relation  skip over processing relations
       --defaults            Print default values for ingest parameters.
 
-      This step will optimize when --optimize is > 0.
+      This step will optimize when --optimize is provided.
 
     scan - scans a pbf, outputting a scan file
       -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
@@ -331,7 +354,10 @@ fn get_defaults() -> String {
     ifields.channel_size,
     ifields.way_batch_size,
     ifields.relation_batch_size,
-    ifields.optimize,
+    match ifields.optimize {
+      Some((x_divs,y_divs)) => format!["{},{}", x_divs, y_divs],
+      None => "false".to_string(),
+    },
     efields.branch_factor,
     efields.max_depth,
     efields.max_records,
@@ -425,10 +451,17 @@ fn get_ingest_options(argv: &argmap::Map) -> IngestOptions {
   if let Some(relation_batch_size) = o_relation_batch_size {
     ingest_options.relation_batch_size = relation_batch_size;
   }
-  argv.get("optimize")
+  ingest_options.optimize = argv.get("optimize")
     .and_then(|x| x.first())
-    .map(|x| x.parse().expect("invalid number for --optimize"))
-    .map(|x| { ingest_options.optimize = x; });
+    .filter(|x| x.ne(&"false") && x.ne(&"None") && x.ne(&"none"))
+    .map(|x| {
+      let (nx,ny) = x.split_once(',')
+        .expect("invalid value for --optimize. expected: LON_DIVS,LAT_DIVS");
+      (
+        nx.parse().expect("invalid number for LON_DIVS in --optimize=LON_DIVS,LAT_DIVS"),
+        ny.parse().expect("invalid number for LAT_DIVS in --optimize=LON_DIVS,LAT_DIVS"),
+      )
+    });
   let o_ingest_node = argv.get("no_ingest_node")
     .or_else(|| argv.get("no_ingest_nodes"))
     .or_else(|| argv.get("no-ingest-node"))
