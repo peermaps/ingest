@@ -71,8 +71,9 @@ impl Ingest {
         Parser::new(Box::new(h))
       }).collect::<Vec<_>>();
       let file_size = std::fs::File::open(pbf_file).unwrap().metadata().unwrap().len();
-      parallel_scan(parsers, 0, file_size).await.unwrap()
+      parallel_scan(self.progress.clone(), parsers, 0, file_size).await.unwrap()
     };
+    self.progress.write().await.add("scan", 0);
     self.progress.write().await.end("scan");
     scan_table
   }
@@ -423,7 +424,6 @@ impl Ingest {
     let mut skip = HashMap::new();
     let mut batch = vec![];
     let mut sync_count = 0;
-    let mut n_fail = 0;
     for iy in 0..y_divs {
       for ix in 0..x_divs {
         let bbox = (
@@ -445,9 +445,6 @@ impl Ingest {
           if skip.contains_key(&id) {
             let n = {
               let n = skip.get_mut(&id).unwrap();
-              if *n == 0 {
-                n_fail += 1;
-              }
               *n -= 1;
               *n
             };
@@ -489,13 +486,11 @@ impl Ingest {
             }
             let n = nx*ny-1;
             if n > 0 {
-              //println!["{}*{}-1={}", nx, ny, n];
               skip.insert(id, n);
             }
           }
           batch.push(eyros::Row::Insert(p,v));
         }
-        println!["bbox={:?} [{}] {},{}", &bbox, count, skip.len(), n_fail];
         if !batch.is_empty() {
           out_db.batch(&batch).await?;
           batch.clear();
@@ -504,11 +499,15 @@ impl Ingest {
           out_db.sync().await?;
           sync_count = 0;
         }
+        if count > 0 {
+          self.progress.write().await.add("optimize", count);
+        }
       }
     }
     if sync_count > 0 {
       out_db.sync().await?;
     }
+    self.progress.write().await.add("optimize", 0);
     self.progress.write().await.end("optimize");
     Ok(())
   }

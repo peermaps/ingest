@@ -1,12 +1,12 @@
-use crate::Error;
-use async_std::{channel,task,prelude::*};
+use crate::{Error,progress::Progress};
+use async_std::{channel,task,sync::{Arc,RwLock},prelude::*};
 use osmpbf_parser::{Parser,ScanTable,element,Element};
 use futures::future::join_all;
 use std::ops::Bound::Included;
 use std::io::{Read,Seek};
 
 pub async fn parallel_scan<F: Read+Seek+Send+'static>(
-  mut parsers: Vec<Parser<F>>, start: u64, end: u64
+  progress: Arc<RwLock<Progress>>, mut parsers: Vec<Parser<F>>, start: u64, end: u64
 ) -> Result<ScanTable,Error> {
   let (offset_sender,offset_receiver) = channel::unbounded();
   let offset_work = {
@@ -30,6 +30,7 @@ pub async fn parallel_scan<F: Read+Seek+Send+'static>(
   let mut table_work: Vec<task::JoinHandle<Result<ScanTable,Error>>> = vec![];
   for mut parser in parsers {
     let r = offset_receiver.clone();
+    let p = progress.clone();
     table_work.push(task::spawn(async move {
       let mut table = ScanTable::default();
       while let Ok((blob_offset,blob_len)) = r.recv().await {
@@ -82,6 +83,7 @@ pub async fn parallel_scan<F: Read+Seek+Send+'static>(
             },
           }
         }
+        p.write().await.add("scan",items.len());
       }
       Ok(table)
     }));
