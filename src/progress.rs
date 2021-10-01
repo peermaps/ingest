@@ -78,20 +78,24 @@ impl std::fmt::Display for Info {
     });
     if let (Some(s),Some(e)) = (self.start,self.end) {
       let rate = (self.count as f64) / e.duration_since(s).as_secs_f64();
-      write![f, "[{:<9} {}] {:>10} ({:>7.0}/s)", self.label, d, self.count, rate]
+      write![f, "[{:<9} {}] {:>13} ({:>9}/s)", self.label, d,
+        un(self.count), un(format!["{:.0}", rate])]
     } else if let (Some(first),Some(last)) = (self.samples.front(),self.samples.back()) {
       let e = first.0.as_secs_f64() - last.0.as_secs_f64();
       if e < 0.001 && self.start.is_some() {
         let rate = (self.count as f64) / self.start.unwrap().elapsed().as_secs_f64();
-        write![f, "[{:<9} {}] {:>10} ({:>7.0}/s)", self.label, d, self.count, rate]
+        write![f, "[{:<9} {}] {:>13} ({:>9}/s)", self.label, d,
+          un(self.count), un(format!["{:.0}", rate])]
       } else if e < 0.001 {
-        write![f, "[{:<9} {}] {:^10} ({:^7}/s)", self.label, d, self.count, "---"]
+        write![f, "[{:<9} {}] {:^13} ({:^9}/s)", self.label, d,
+          un(self.count), "---"]
       } else {
         let rate = ((first.1 - last.1) as f64) / e;
-        write![f, "[{:<9} {}] {:>10} ({:>7.0}/s)", self.label, d, self.count, rate]
+        write![f, "[{:<9} {}] {:>13} ({:>9}/s)", self.label, d,
+          un(self.count), un(format!["{:.0}", rate])]
       }
     } else {
-      write![f, "[{:<9} {}] {:^10} ({:^7}/s)", self.label, d, "---", "---"]
+      write![f, "[{:<9} {}] {:^13} ({:^9}/s)", self.label, d, "---", "---"]
     }
   }
 }
@@ -141,4 +145,20 @@ fn hms(oi: Option<std::time::Duration>) -> String {
   } else {
     "--:--:--".to_string()
   }
+}
+
+fn un<T: ToString>(n: T) -> String {
+  let s = n.to_string();
+  let mut ch = s.split("").collect::<Vec<&str>>();
+  ch.reverse();
+  let len = ch.len();
+  let mut rs = ch.iter().enumerate().map(|(i,c)| {
+    if i%3 == 0 && i > 0 && i+2 < len {
+      "_".to_string() + c
+    } else {
+      c.to_string()
+    }
+  }).collect::<Vec<String>>();
+  rs.reverse();
+  rs.join("")
 }
