@@ -79,24 +79,24 @@ impl std::fmt::Display for Info {
     });
     if let (Some(s),Some(e)) = (self.start,self.end) {
       let rate = (self.count as f64) / e.duration_since(s).as_secs_f64();
-      write![f, "[{:<9} {}] {:>13} ({:>9}/s)", self.label, d,
+      write![f, "[{:<9} {}] {:>14} ({:>10}/s)", self.label, d,
         un(self.count), un(rate.round() as u64)]
     } else if let (Some(first),Some(last)) = (self.samples.front(),self.samples.back()) {
       let e = first.0.as_secs_f64() - last.0.as_secs_f64();
       if e < 0.001 && self.start.is_some() {
         let rate = (self.count as f64) / self.start.unwrap().elapsed().as_secs_f64();
-        write![f, "[{:<9} {}] {:>13} ({:>9}/s)", self.label, d,
+        write![f, "[{:<9} {}] {:>14} ({:>10}/s)", self.label, d,
           un(self.count), un(rate.round() as u64)]
       } else if e < 0.001 {
-        write![f, "[{:<9} {}] {:^13} ({:^9}/s)", self.label, d,
+        write![f, "[{:<9} {}] {:^14} ({:^10}/s)", self.label, d,
           un(self.count), "---"]
       } else {
         let rate = ((first.1 - last.1) as f64) / e;
-        write![f, "[{:<9} {}] {:>13} ({:>9}/s)", self.label, d,
+        write![f, "[{:<9} {}] {:>14} ({:>10}/s)", self.label, d,
           un(self.count), un(rate.round() as u64)]
       }
     } else {
-      write![f, "[{:<9} {}] {:^13} ({:^9}/s)", self.label, d, "---", "---"]
+      write![f, "[{:<9} {}] {:^14} ({:^9}/s)", self.label, d, "---", "---"]
     }
   }
 }
