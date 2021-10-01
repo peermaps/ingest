@@ -96,7 +96,7 @@ impl std::fmt::Display for Info {
           un(self.count), un(rate.round() as u64)]
       }
     } else {
-      write![f, "[{:<9} {}] {:^14} ({:^9}/s)", self.label, d, "---", "---"]
+      write![f, "[{:<9} {}] {:^14} ({:^10}/s)", self.label, d, "---", "---"]
     }
   }
 }
