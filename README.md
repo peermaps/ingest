@@ -25,6 +25,8 @@ ingest - scans and processes a pbf
   --no-ingest-relation  skip over processing relations
   --defaults            Print default values for ingest parameters.
 
+  This step will optimize when --optimize is provided.
+
 scan - scans a pbf, outputting a scan file
   -f, --pbf     osm pbf file to ingest or "-" for stdin (default)
   -o, --outdir  write a scan file in this dir
@@ -41,9 +43,13 @@ ingest-from-scan - process a pbf from an existing scan
   --no-ingest-relation  skip over processing relations
   --defaults            Print default values for ingest parameters.
 
--h, --help     Print this help message
--v, --version  Print the version string (2.0.0)
+optimize - recursively rebuild tree sections to improve query performance
+  --optimize=X,Y  divide into a grid of X*Y sublevels to rebuild the tree
+  -e, --edb       eyros db dir to write spatial data
+  -o, --outdir    write eyros db in this dir in edb/ and read scan file
 
+-h, --help     Print this help message
+-v, --version  Print the version string (3.0.0)
 ```
 
 # install

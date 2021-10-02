@@ -315,11 +315,10 @@ fn usage(args: &[String]) -> String {
       --no-ingest-relation  skip over processing relations
       --defaults            Print default values for ingest parameters.
 
-    optimize - recursively rebuild tree sections to improve  query performance
-      --optimize    number of tree-file levels to process at a time.
-                    when 0 (default), this step does nothing.
-      -e, --edb     eyros db dir to write spatial data
-      -o, --outdir  write eyros db in this dir in edb/ and read scan file
+    optimize - recursively rebuild tree sections to improve query performance
+      --optimize=X,Y  divide into a grid of X*Y sublevels to rebuild the tree
+      -e, --edb       eyros db dir to write spatial data
+      -o, --outdir    write eyros db in this dir in edb/ and read scan file
 
     -h, --help     Print this help message
     -v, --version  Print the version string ({})
