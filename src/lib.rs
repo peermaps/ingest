@@ -9,7 +9,7 @@ pub use progress::Progress;
 use osmpbf_parser::{Parser,Scan,ScanTable,element};
 mod par_scan;
 use par_scan::parallel_scan;
-use eyros::{Point,Value};
+use eyros::{Point,Value,Tree};
 use std::collections::HashMap;
 use async_std::prelude::*;
 
@@ -421,9 +421,11 @@ impl Ingest {
       (db_bounds.1).0 - (db_bounds.0).0,
       (db_bounds.1).1 - (db_bounds.0).1,
     );
+    let mut tree_refs = vec![];
     let mut skip = HashMap::new();
-    let mut batch = vec![];
+    let mut values = vec![];
     let mut sync_count = 0;
+    // idea: take big bytes and recursively subdivide when > threshold
     for iy in 0..y_divs {
       for ix in 0..x_divs {
         let bbox = (
@@ -489,11 +491,26 @@ impl Ingest {
               skip.insert(id, n);
             }
           }
-          batch.push(eyros::Row::Insert(p,v));
+          //;Row::Insert(p,v));
+          values.push((p,v));
         }
-        if !batch.is_empty() {
-          out_db.batch(&batch).await?;
-          batch.clear();
+        if !values.is_empty() {
+          let inserts = values.iter()
+            .map(|(p,v)| (p.clone(),eyros::tree::InsertValue::Value(v)))
+            .collect::<Vec<_>>();
+          let (o_tr, create_trees) = T::build(
+            out_db.fields.clone(),
+            &inserts,
+            &mut out_db.meta.next_tree,
+            false
+          );
+          let tr = o_tr.unwrap();
+          let mut trees = out_db.trees.lock().await;
+          for (r,t) in create_trees.iter() {
+            trees.put(r, t.clone()).await?;
+          }
+          tree_refs.push((P::from_bounds(&bbox), eyros::tree::InsertValue::Ref(tr)));
+          values.clear();
         }
         if sync_count > 1_000_000 {
           out_db.sync().await?;
@@ -504,9 +521,21 @@ impl Ingest {
         }
       }
     }
-    if sync_count > 0 {
-      out_db.sync().await?;
+    {
+      let (tr, create_trees) = T::build(
+        out_db.fields.clone(),
+        &tree_refs,
+        &mut out_db.meta.next_tree,
+        false
+      );
+      let mut trees = out_db.trees.lock().await;
+      for (r,t) in create_trees.iter() {
+        trees.put(r, t.clone()).await?;
+      }
+      out_db.meta.roots.push(tr);
     }
+    out_db.sync().await?;
+    out_db.optimize().await?;
     self.progress.write().await.add("optimize", 0);
     self.progress.write().await.end("optimize");
     Ok(())
