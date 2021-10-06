@@ -505,7 +505,7 @@ impl Ingest {
           let q_inserts = values.iter()
             .map(|(p,v)| (p.clone(),eyros::tree::InsertValue::Value(v)))
             .collect::<Vec<_>>();
-          for (bbox,inserts) in divide(100_000,(q_bbox,&q_inserts)) {
+          for (bbox,inserts) in divide(100_000,(q_bbox,q_inserts)) {
             let (o_tr, create_trees) = T::build(
               out_db.fields.clone(),
               &inserts,
@@ -519,8 +519,8 @@ impl Ingest {
             }
             println![
               "({:.4},{:.4},{:.4},{:.4}) {}",
-              (q_bbox.0).0, (q_bbox.0).1, (q_bbox.1).0, (q_bbox.1).1,
-              values.len()
+              (bbox.0).0, (bbox.0).1, (bbox.1).0, (bbox.1).1,
+              inserts.len()
             ];
             tree_refs.push((P::from_bounds(&q_bbox), eyros::tree::InsertValue::Ref(tr)));
           }
@@ -536,8 +536,10 @@ impl Ingest {
       }
     }
     {
+      let mut fields = (*out_db.fields).clone();
+      fields.rebuild_depth = 0;
       let (tr, create_trees) = T::build(
-        out_db.fields.clone(),
+        Arc::new(fields),
         &tree_refs,
         &mut out_db.meta.next_tree,
         false
@@ -549,7 +551,7 @@ impl Ingest {
       out_db.meta.roots.push(tr);
     }
     out_db.sync().await?;
-    out_db.optimize(4).await?;
+    //out_db.optimize(4).await?;
     self.progress.write().await.add("optimize", 0);
     self.progress.write().await.end("optimize");
     Ok(())
