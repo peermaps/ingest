@@ -10,7 +10,7 @@ pub fn divide<'a>(n: usize, bucket: I<'a>) -> Vec<I<'a>> {
   if bucket.1.len() <= n {
     return vec![bucket];
   }
-  let (nx,ny) = (4,4);
+  let (nx,ny) = (2,2);
   let mut res = vec![];
   let mut queue = VecDeque::new();
   queue.push_back(bucket);

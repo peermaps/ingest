@@ -505,7 +505,7 @@ impl Ingest {
           let q_inserts = values.iter()
             .map(|(p,v)| (p.clone(),eyros::tree::InsertValue::Value(v)))
             .collect::<Vec<_>>();
-          for (bbox,inserts) in divide(100_000,(q_bbox,q_inserts)) {
+          for (bbox,inserts) in divide(50_000,(q_bbox,q_inserts)) {
             let (o_tr, create_trees) = T::build(
               out_db.fields.clone(),
               &inserts,
