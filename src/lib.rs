@@ -4,6 +4,8 @@ pub mod error;
 pub use error::*;
 mod value;
 mod progress;
+mod divide;
+use divide::divide;
 pub mod denorm;
 pub use progress::Progress;
 use osmpbf_parser::{Parser,Scan,ScanTable,element};
@@ -438,6 +440,7 @@ impl Ingest {
             ((iy+1) as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
           )
         );
+        let mut q_bbox = ((f32::INFINITY,f32::INFINITY),(f32::NEG_INFINITY,f32::NEG_INFINITY));
         let mut stream = in_db.query(&bbox).await?;
         let mut count = 0;
         while let Some(r) = stream.next().await {
@@ -492,24 +495,35 @@ impl Ingest {
             }
           }
           //;Row::Insert(p,v));
+          (q_bbox.0).0 = (q_bbox.0).0.min((pbounds.0).0);
+          (q_bbox.0).1 = (q_bbox.0).1.min((pbounds.0).1);
+          (q_bbox.1).0 = (q_bbox.1).0.max((pbounds.1).0);
+          (q_bbox.1).1 = (q_bbox.1).1.max((pbounds.1).1);
           values.push((p,v));
         }
         if !values.is_empty() {
-          let inserts = values.iter()
+          let q_inserts = values.iter()
             .map(|(p,v)| (p.clone(),eyros::tree::InsertValue::Value(v)))
             .collect::<Vec<_>>();
-          let (o_tr, create_trees) = T::build(
-            out_db.fields.clone(),
-            &inserts,
-            &mut out_db.meta.next_tree,
-            false
-          );
-          let tr = o_tr.unwrap();
-          let mut trees = out_db.trees.lock().await;
-          for (r,t) in create_trees.iter() {
-            trees.put(r, t.clone()).await?;
+          for (bbox,inserts) in divide(100_000,(q_bbox,&q_inserts)) {
+            let (o_tr, create_trees) = T::build(
+              out_db.fields.clone(),
+              &inserts,
+              &mut out_db.meta.next_tree,
+              false
+            );
+            let tr = o_tr.unwrap();
+            let mut trees = out_db.trees.lock().await;
+            for (r,t) in create_trees.iter() {
+              trees.put(r, t.clone()).await?;
+            }
+            println![
+              "({:.4},{:.4},{:.4},{:.4}) {}",
+              (q_bbox.0).0, (q_bbox.0).1, (q_bbox.1).0, (q_bbox.1).1,
+              values.len()
+            ];
+            tree_refs.push((P::from_bounds(&q_bbox), eyros::tree::InsertValue::Ref(tr)));
           }
-          tree_refs.push((P::from_bounds(&bbox), eyros::tree::InsertValue::Ref(tr)));
           values.clear();
         }
         if sync_count > 1_000_000 {
@@ -535,7 +549,7 @@ impl Ingest {
       out_db.meta.roots.push(tr);
     }
     out_db.sync().await?;
-    out_db.optimize().await?;
+    out_db.optimize(4).await?;
     self.progress.write().await.add("optimize", 0);
     self.progress.write().await.end("optimize");
     Ok(())
