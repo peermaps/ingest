@@ -7,7 +7,7 @@ type B = ((f32,f32),(f32,f32));
 type I<'a> = (B,Vec<(P,InsertValue<'a,P,V>)>);
 
 pub fn divide<'a>(n: usize, bucket: I<'a>) -> Vec<I<'a>> {
-  const DEPTH_LIMIT: usize = 20;
+  const DEPTH_LIMIT: usize = 30;
 
   if bucket.1.len() <= n {
     return vec![bucket];
@@ -17,6 +17,7 @@ pub fn divide<'a>(n: usize, bucket: I<'a>) -> Vec<I<'a>> {
   let mut queue = VecDeque::new();
   queue.push_back((0,bucket));
   while let Some((depth,(q_bbox,q_inserts))) = queue.pop_front() {
+    if q_inserts.is_empty() { continue }
     let mut boxes: Vec<I<'a>> = Vec::with_capacity(nx*ny);
     let q_span = (
       (q_bbox.1).0 - (q_bbox.0).0,
@@ -62,7 +63,7 @@ pub fn divide<'a>(n: usize, bucket: I<'a>) -> Vec<I<'a>> {
         }
       } else if !inserts.is_empty() && depth+1 >= DEPTH_LIMIT {
         res.push((bbox,inserts));
-      } else {
+      } else if !inserts.is_empty() {
         queue.push_back((depth+1,(bbox,inserts)));
       }
     }
