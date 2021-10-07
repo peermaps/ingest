@@ -13,12 +13,12 @@ mod par_scan;
 use par_scan::parallel_scan;
 use eyros::{Point,Value,Tree};
 use std::collections::HashMap;
-use async_std::prelude::*;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
 use async_std::{sync::{Arc,Mutex,RwLock},task,channel};
+use async_std::prelude::*;
 use futures::future::join_all;
 
 type T = eyros::Tree2<f32,f32,V>;
@@ -406,12 +406,12 @@ impl Ingest {
   }
 
   pub async fn optimize(
-    &mut self, mut in_db: EDB, mut out_db: EDB, xy_divs: (usize,usize)
+    &mut self, in_db: EDB, mut out_db: EDB, xy_divs: (usize,usize)
   ) -> Result<(),Error> {
     self.progress.write().await.start("optimize");
     let (x_divs,y_divs) = xy_divs;
     let ibox = ((f32::INFINITY,f32::INFINITY),(f32::NEG_INFINITY,f32::NEG_INFINITY));
-    let db_bounds = in_db.meta.roots.iter()
+    let db_bounds = in_db.meta.read().await.roots.iter()
       .filter_map(|r| r.as_ref().map(|tr| tr.bounds.to_bounds().unwrap()))
       .fold(ibox,|bbox,b| {
         (
@@ -423,104 +423,153 @@ impl Ingest {
       (db_bounds.1).0 - (db_bounds.0).0,
       (db_bounds.1).1 - (db_bounds.0).1,
     );
-    let mut tree_refs = vec![];
-    let mut skip = HashMap::new();
-    let mut values = vec![];
-    let mut sync_count = 0;
-    // idea: take big bytes and recursively subdivide when > threshold
-    for iy in 0..y_divs {
-      for ix in 0..x_divs {
-        let bbox = (
-          (
-            (ix as f32)/(x_divs as f32) * db_span.0 + (db_bounds.0).0,
-            (iy as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
-          ),
-          (
-            ((ix+1) as f32)/(x_divs as f32) * db_span.0 + (db_bounds.0).0,
-            ((iy+1) as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
-          )
-        );
-        let mut q_bbox = ((f32::INFINITY,f32::INFINITY),(f32::NEG_INFINITY,f32::NEG_INFINITY));
-        let mut stream = in_db.query(&bbox).await?;
-        let mut count = 0;
-        while let Some(r) = stream.next().await {
-          let (p,v) = r?;
-          if v.is_empty() { continue }
-          let id = v.get_id();
-          if skip.contains_key(&id) {
-            let n = {
-              let n = skip.get_mut(&id).unwrap();
-              *n -= 1;
-              *n
-            };
-            if n <= 0 { skip.remove(&id); }
-            continue;
-          }
-          count += 1;
-          sync_count += 1;
-          let pbounds = (
+
+    let (bbox_sender,bbox_receiver) = channel::unbounded();
+    task::spawn(async move {
+      for iy in 0..y_divs {
+        for ix in 0..x_divs {
+          bbox_sender.send((
             (
-              *match &p.0 {
-                eyros::Coord::Scalar(x) => x,
-                eyros::Coord::Interval(xmin,_) => xmin,
-              },
-              *match &p.1 {
-                eyros::Coord::Scalar(y) => y,
-                eyros::Coord::Interval(ymin,_) => ymin,
-              },
+              (ix as f32)/(x_divs as f32) * db_span.0 + (db_bounds.0).0,
+              (iy as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
             ),
             (
-              *match &p.0 {
-                eyros::Coord::Scalar(x) => x,
-                eyros::Coord::Interval(_,xmax) => xmax,
-              },
-              *match &p.1 {
-                eyros::Coord::Scalar(y) => y,
-                eyros::Coord::Interval(_,ymax) => ymax,
-              },
-            ),
-          );
-          {
-            let mut nx = 1;
-            let mut ny = 1;
-            if (pbounds.0).0 <= (bbox.0).0 || (pbounds.1).0 >= (bbox.1).0 {
-              nx += (((pbounds.1).0 - (pbounds.0).0) / ((bbox.1).0 - (bbox.0).0)).ceil() as usize;
-            }
-            if (pbounds.0).1 <= (bbox.0).1 || (pbounds.1).1 >= (bbox.1).1 {
-              ny += (((pbounds.1).1 - (pbounds.0).1) / ((bbox.1).1 - (bbox.0).1)).ceil() as usize;
-            }
-            let n = nx*ny-1;
-            if n > 0 {
-              skip.insert(id, n);
-            }
-          }
-          //;Row::Insert(p,v));
-          (q_bbox.0).0 = (q_bbox.0).0.min((pbounds.0).0);
-          (q_bbox.0).1 = (q_bbox.0).1.min((pbounds.0).1);
-          (q_bbox.1).0 = (q_bbox.1).0.max((pbounds.1).0);
-          (q_bbox.1).1 = (q_bbox.1).1.max((pbounds.1).1);
-          values.push((p,v));
+              ((ix+1) as f32)/(x_divs as f32) * db_span.0 + (db_bounds.0).0,
+              ((iy+1) as f32)/(y_divs as f32) * db_span.1 + (db_bounds.0).1,
+            )
+          )).await.unwrap();
         }
-        if !values.is_empty() {
-          let q_inserts = values.iter()
-            .map(|(p,v)| (p.clone(),eyros::tree::InsertValue::Value(v)))
-            .collect::<Vec<_>>();
-          for (_bbox,inserts) in divide(50_000,(q_bbox,q_inserts)) {
-            let (o_tr, create_trees) = T::build(
-              out_db.fields.clone(),
-              &inserts,
-              &mut out_db.meta.next_tree,
-              false
+      }
+      bbox_sender.close();
+    });
+
+    let skip_rw = Arc::new(RwLock::new(HashMap::new()));
+    let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+
+    let mut work = vec![];
+    let n_active = Arc::new(Mutex::new(nproc+1));
+    let (tr_sender,tr_receiver) = channel::unbounded();
+    for _ in 0..nproc {
+      let bbox_r = bbox_receiver.clone();
+      let tr_s = tr_sender.clone();
+      let nc = n_active.clone();
+      let meta_c = out_db.meta.clone();
+      let m_trees = out_db.trees.clone();
+      let mut idb = in_db.clone();
+      let skip = skip_rw.clone();
+      let fields = out_db.fields.clone();
+      work.push(task::spawn(async move {
+        let mut values = vec![];
+        while let Ok(bbox) = bbox_r.recv().await {
+          let mut q_bbox = ((f32::INFINITY,f32::INFINITY),(f32::NEG_INFINITY,f32::NEG_INFINITY));
+          let mut stream = idb.query(&bbox).await?;
+          while let Some(r) = stream.next().await {
+            let (p,v) = r?;
+            if v.is_empty() { continue }
+            let id = v.get_id();
+            if skip.read().await.contains_key(&id) {
+              let mut skip_w = skip.write().await;
+              let n = {
+                let n = skip_w.get_mut(&id).unwrap();
+                *n -= 1;
+                *n
+              };
+              if n <= 0 { skip_w.remove(&id); }
+              continue;
+            }
+            let pbounds = (
+              (
+                *match &p.0 {
+                  eyros::Coord::Scalar(x) => x,
+                  eyros::Coord::Interval(xmin,_) => xmin,
+                },
+                *match &p.1 {
+                  eyros::Coord::Scalar(y) => y,
+                  eyros::Coord::Interval(ymin,_) => ymin,
+                },
+              ),
+              (
+                *match &p.0 {
+                  eyros::Coord::Scalar(x) => x,
+                  eyros::Coord::Interval(_,xmax) => xmax,
+                },
+                *match &p.1 {
+                  eyros::Coord::Scalar(y) => y,
+                  eyros::Coord::Interval(_,ymax) => ymax,
+                },
+              ),
             );
-            let tr = o_tr.unwrap();
-            let mut trees = out_db.trees.lock().await;
-            for (r,t) in create_trees.iter() {
-              trees.put(r, t.clone()).await?;
+            {
+              let mut nx = 1;
+              let mut ny = 1;
+              if (pbounds.0).0 <= (bbox.0).0 || (pbounds.1).0 >= (bbox.1).0 {
+                nx += (((pbounds.1).0 - (pbounds.0).0) / ((bbox.1).0 - (bbox.0).0)).ceil() as usize;
+              }
+              if (pbounds.0).1 <= (bbox.0).1 || (pbounds.1).1 >= (bbox.1).1 {
+                ny += (((pbounds.1).1 - (pbounds.0).1) / ((bbox.1).1 - (bbox.0).1)).ceil() as usize;
+              }
+              let n = nx*ny-1;
+              if n > 0 {
+                skip.write().await.insert(id, n);
+              }
             }
-            tree_refs.push((P::from_bounds(&q_bbox), eyros::tree::InsertValue::Ref(tr)));
+            (q_bbox.0).0 = (q_bbox.0).0.min((pbounds.0).0);
+            (q_bbox.0).1 = (q_bbox.0).1.min((pbounds.0).1);
+            (q_bbox.1).0 = (q_bbox.1).0.max((pbounds.1).0);
+            (q_bbox.1).1 = (q_bbox.1).1.max((pbounds.1).1);
+            values.push((p,v));
           }
-          values.clear();
+          if !values.is_empty() {
+            let q_inserts = values.iter()
+              .map(|(p,v)| (p.clone(),eyros::tree::InsertValue::Value(v)))
+              .collect::<Vec<_>>();
+            for (_bbox,inserts) in divide(50_000,(q_bbox,q_inserts)) {
+              if inserts.is_empty() { continue }
+              let (o_tr, create_trees) = {
+                let mut meta = meta_c.write().await;
+                T::build(
+                  fields.clone(),
+                  &inserts,
+                  &mut meta.next_tree,
+                  false
+                )
+              };
+              let tr = o_tr.unwrap();
+              {
+                let mut trees = m_trees.lock().await;
+                for (r,t) in create_trees.iter() {
+                  trees.put(r, t.clone()).await?;
+                }
+              }
+              let count = inserts.len();
+              tr_s.send(
+                (count, (P::from_bounds(&q_bbox), eyros::tree::InsertValue::Ref(tr)))
+              ).await?;
+            }
+            values.clear();
+          }
         }
+        {
+          let mut n = nc.lock().await;
+          *n -= 1;
+          if *n == 0 { tr_s.close(); }
+        }
+        let r: Result<(),Error> = Ok(());
+        r
+      }));
+    }
+    {
+      let mut n = n_active.lock().await;
+      *n -= 1;
+      if *n == 0 { tr_sender.close(); }
+    }
+
+    {
+      let mut sync_count = 0;
+      let mut tree_refs = vec![];
+      while let Ok((count,r)) = tr_receiver.recv().await {
+        tree_refs.push(r);
+        sync_count += count;
         if sync_count > 1_000_000 {
           out_db.sync().await?;
           sync_count = 0;
@@ -529,23 +578,24 @@ impl Ingest {
           self.progress.write().await.add("optimize", count);
         }
       }
-    }
-    {
       let mut fields = (*out_db.fields).clone();
       fields.rebuild_depth = 0;
+      let mut meta = out_db.meta.write().await;
       let (tr, create_trees) = T::build(
         Arc::new(fields),
         &tree_refs,
-        &mut out_db.meta.next_tree,
+        &mut meta.next_tree,
         false
       );
       let mut trees = out_db.trees.lock().await;
       for (r,t) in create_trees.iter() {
         trees.put(r, t.clone()).await?;
       }
-      out_db.meta.roots.push(tr);
+      meta.roots.push(tr);
     }
     out_db.sync().await?;
+    for r in join_all(work).await { r?; }
+
     //out_db.optimize(4).await?;
     self.progress.write().await.add("optimize", 0);
     self.progress.write().await.end("optimize");
