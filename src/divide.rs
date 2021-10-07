@@ -7,14 +7,16 @@ type B = ((f32,f32),(f32,f32));
 type I<'a> = (B,Vec<(P,InsertValue<'a,P,V>)>);
 
 pub fn divide<'a>(n: usize, bucket: I<'a>) -> Vec<I<'a>> {
+  const DEPTH_LIMIT: usize = 20;
+
   if bucket.1.len() <= n {
     return vec![bucket];
   }
   let (nx,ny) = (2,2);
   let mut res = vec![];
   let mut queue = VecDeque::new();
-  queue.push_back(bucket);
-  while let Some((q_bbox,q_inserts)) = queue.pop_front() {
+  queue.push_back((0,bucket));
+  while let Some((depth,(q_bbox,q_inserts))) = queue.pop_front() {
     let mut boxes: Vec<I<'a>> = Vec::with_capacity(nx*ny);
     let q_span = (
       (q_bbox.1).0 - (q_bbox.0).0,
@@ -53,13 +55,15 @@ pub fn divide<'a>(n: usize, bucket: I<'a>) -> Vec<I<'a>> {
       } else if !inserts.is_empty() && inserts.len() == q_inserts_len {
         let all_big = inserts.iter()
           .all(|(p,_)| coord_span_ge(&p.0, q_span.0) || coord_span_ge(&p.1, q_span.1));
-        if all_big {
+        if all_big || depth+1 >= DEPTH_LIMIT {
           res.push((bbox,inserts));
         } else {
-          queue.push_back((bbox,inserts));
+          queue.push_back((depth+1,(bbox,inserts)));
         }
-      } else if !inserts.is_empty() {
-        queue.push_back((bbox,inserts));
+      } else if !inserts.is_empty() && depth+1 >= DEPTH_LIMIT {
+        res.push((bbox,inserts));
+      } else {
+        queue.push_back((depth+1,(bbox,inserts)));
       }
     }
   }

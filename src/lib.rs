@@ -543,7 +543,7 @@ impl Ingest {
               }
               let count = inserts.len();
               tr_s.send(
-                (count, (P::from_bounds(&q_bbox), eyros::tree::InsertValue::Ref(tr)))
+                (count, (tr.bounds.clone(), eyros::tree::InsertValue::Ref(tr)))
               ).await?;
             }
             values.clear();
