@@ -1,5 +1,5 @@
 #![warn(clippy::future_not_send)]
-#![feature(async_closure,backtrace,available_concurrency)]
+#![feature(async_closure,backtrace)]
 pub mod error;
 pub use error::*;
 mod value;
@@ -67,7 +67,7 @@ impl Ingest {
   pub async fn scan(&mut self, pbf_file: &str) -> ScanTable {
     self.progress.write().await.start("scan");
     let scan_table = {
-      let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+      let nproc = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
       let parsers = (0..nproc).map(|_| {
         let h = std::fs::File::open(pbf_file).unwrap();
         Parser::new(Box::new(h))
@@ -129,7 +129,7 @@ impl Ingest {
       task::spawn(async move {
         let mut element_counter = 0;
         let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
-        let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+        let nproc = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         let node_receiver = {
           let scans = (0..nproc).map(|_| {
             let h = std::fs::File::open(&file).unwrap();
@@ -189,7 +189,7 @@ impl Ingest {
       task::spawn(async move {
         let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
         let mut element_counter = 0;
-        let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+        let nproc = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         {
           let mut offset = 0;
           loop {
@@ -282,7 +282,7 @@ impl Ingest {
       task::spawn(async move {
         let mut batch = Vec::with_capacity(BATCH_SEND_SIZE);
         let mut element_counter = 0;
-        let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+        let nproc = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         {
           let mut offset = 0;
           loop {
@@ -444,7 +444,7 @@ impl Ingest {
     });
 
     let skip_rw = Arc::new(RwLock::new(HashMap::new()));
-    let nproc = std::thread::available_concurrency().map(|n| n.get()).unwrap_or(1);
+    let nproc = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
 
     let mut work = vec![];
     let n_active = Arc::new(Mutex::new(nproc+1));
@@ -454,7 +454,7 @@ impl Ingest {
       let tr_s = tr_sender.clone();
       let nc = n_active.clone();
       let meta_c = out_db.meta.clone();
-      let m_trees = out_db.trees.clone();
+      let trees = out_db.trees.clone();
       let mut idb = in_db.clone();
       let skip = skip_rw.clone();
       let fields = out_db.fields.clone();
@@ -536,7 +536,6 @@ impl Ingest {
               };
               let tr = o_tr.unwrap();
               {
-                let mut trees = m_trees.lock().await;
                 for (r,t) in create_trees.iter() {
                   trees.put(r, t.clone()).await?;
                 }
@@ -587,7 +586,7 @@ impl Ingest {
         &mut meta.next_tree,
         false
       );
-      let mut trees = out_db.trees.lock().await;
+      let trees = &mut out_db.trees;
       for (r,t) in create_trees.iter() {
         trees.put(r, t.clone()).await?;
       }
